@@ -21,6 +21,20 @@ class FactVisibility(StrEnum):
     PRIVATE = "private"
 
 
+class ApplicationStatus(StrEnum):
+    """Auditable lifecycle state for a job application."""
+
+    CONSIDERING = "considering"
+    PREPARING = "preparing"
+    APPLIED = "applied"
+    ASSESSMENT = "assessment"
+    INTERVIEW = "interview"
+    OFFER = "offer"
+    REJECTED = "rejected"
+    WITHDRAWN = "withdrawn"
+    EXPIRED = "expired"
+
+
 class DomainValidationError(ValueError):
     """Raised when a domain operation receives invalid input."""
 
