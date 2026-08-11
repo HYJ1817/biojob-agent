@@ -56,6 +56,10 @@ JobDescription = Annotated[
     str,
     StringConstraints(strip_whitespace=True, min_length=1, max_length=100_000),
 ]
+LocalFilePath = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1, max_length=32_767),
+]
 UrlText = Annotated[
     str,
     StringConstraints(strip_whitespace=True, min_length=1, max_length=2_048),
@@ -229,6 +233,10 @@ class SourcePatch(_RequestModel):
 class MatchRequest(_RequestModel):
     model_provider: NonBlank100 | None = None
     model_name: NonBlank200 | None = None
+
+
+class ProfileDocumentImport(_RequestModel):
+    file_path: LocalFilePath
 
 
 def _validate_url(value: object) -> object:

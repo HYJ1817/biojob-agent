@@ -11,6 +11,7 @@ import re
 import sqlite3
 import unicodedata
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 from uuid import uuid4
@@ -29,6 +30,14 @@ from biojob.domain import (
 )
 from biojob.repository import BioJobRepository
 from biojob.matching import match_job as build_match_report
+from biojob.documents import (
+    MAX_PROFILE_DOCUMENT_BYTES,
+    WORKBOOK_SHEETS,
+    copy_profile_document,
+    extract_profile_lines,
+    write_application_workbook,
+    write_resume_docx,
+)
 from biojob.sources.base import JobSourceAdapter
 from biojob.sources.catalog import DEFAULT_SOURCES, default_adapter_registry
 
@@ -1386,6 +1395,305 @@ class BioJobService:
         finally:
             connection.close()
 
+    def import_profile_document(
+        self,
+        file_path: str | Path,
+        *,
+        actor: str,
+    ) -> dict[str, Any]:
+        actor = _require_nonempty_string("actor", actor)
+        source = Path(file_path).expanduser()
+        if not source.is_file():
+            raise DomainValidationError("profile document must be an existing file")
+        document_type = source.suffix.casefold().lstrip(".")
+        if document_type not in {"docx", "pdf"}:
+            raise DomainValidationError("profile document must be a .docx or .pdf file")
+        size = source.stat().st_size
+        if size <= 0 or size > MAX_PROFILE_DOCUMENT_BYTES:
+            raise DomainValidationError(
+                "profile document must be between 1 byte and 10 MB"
+            )
+        digest = hashlib.sha256(source.read_bytes()).hexdigest()
+        try:
+            lines = extract_profile_lines(source)
+        except (OSError, ValueError) as exc:
+            raise DomainValidationError(
+                f"profile document could not be read: {exc}"
+            ) from exc
+        if not lines:
+            raise DomainValidationError("profile document contains no extractable text")
+
+        destination = copy_profile_document(
+            source,
+            self.database.path.parent / "documents",
+            digest,
+        )
+        connection = self.database.connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            repository = BioJobRepository(connection)
+            existing = repository.get_profile_document_by_sha256(digest)
+            if existing is not None:
+                result = dict(existing)
+                result["fact_count"] = repository.count_profile_facts_by_source_ref(
+                    existing["id"]
+                )
+                connection.execute("COMMIT")
+                return result
+
+            document_id = str(uuid4())
+            created_at = _utc_now()
+            repository.insert_profile_document(
+                document_id=document_id,
+                document_type=document_type,
+                original_name=source.name,
+                local_path=str(destination.resolve()),
+                sha256=digest,
+                created_at=created_at,
+            )
+            for index, line in enumerate(lines, start=1):
+                repository.insert_profile_fact(
+                    fact_id=str(uuid4()),
+                    category="imported",
+                    fact_key=f"document_{digest[:12]}_{index:02d}",
+                    value_json=_serialize_json("value", line),
+                    source_type="document",
+                    source_ref=document_id,
+                    status=ProfileFactStatus.PENDING.value,
+                    visibility=FactVisibility.BOTH.value,
+                    confirmed_at=None,
+                    created_at=created_at,
+                    updated_at=created_at,
+                )
+            self._insert_audit(
+                repository,
+                action="profile_document.imported",
+                entity_type="profile_document",
+                entity_id=document_id,
+                actor=actor,
+                metadata={
+                    "document_type": document_type,
+                    "original_name": source.name,
+                    "sha256": digest,
+                    "fact_count": len(lines),
+                },
+                created_at=created_at,
+            )
+            result = {
+                "id": document_id,
+                "document_type": document_type,
+                "original_name": source.name,
+                "local_path": str(destination.resolve()),
+                "sha256": digest,
+                "created_at": created_at,
+                "fact_count": len(lines),
+            }
+            connection.execute("COMMIT")
+            return result
+        except Exception:
+            _rollback(connection)
+            raise
+        finally:
+            connection.close()
+
+    def list_profile_documents(self) -> list[dict[str, Any]]:
+        connection = self.database.connect()
+        try:
+            repository = BioJobRepository(connection)
+            results = []
+            for row in repository.list_profile_documents():
+                item = dict(row)
+                item["fact_count"] = repository.count_profile_facts_by_source_ref(
+                    row["id"]
+                )
+                results.append(item)
+            return results
+        finally:
+            connection.close()
+
+    def generate_resume(self, job_id: str, *, actor: str) -> dict[str, Any]:
+        job_id = _require_nonempty_string("job_id", job_id)
+        actor = _require_nonempty_string("actor", actor)
+        connection = self.database.connect()
+        output: Path | None = None
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            repository = BioJobRepository(connection)
+            row = repository.get_job(job_id)
+            if row is None:
+                raise DomainNotFoundError(f"job not found: {job_id}")
+            job = _job_dict(row)
+            if job["application"]["status"] != ApplicationStatus.PREPARING.value:
+                raise DomainConflictError(
+                    "resume generation requires application status 'preparing'"
+                )
+            facts = [
+                _profile_fact_dict(fact)
+                for fact in repository.list_usable_profile_facts(
+                    status=ProfileFactStatus.CONFIRMED.value,
+                    first_visibility=FactVisibility.RESUME.value,
+                    second_visibility=FactVisibility.BOTH.value,
+                )
+            ]
+            if not facts:
+                raise DomainConflictError(
+                    "resume generation requires at least one confirmed resume fact"
+                )
+            resume_id = str(uuid4())
+            created_at = _utc_now()
+            company_name = _safe_export_component(job["company"]["name"], "company")
+            title = _safe_export_component(job["title"], "job")
+            output = (
+                self.database.path.parent
+                / "resumes"
+                / f"{company_name}-{title}-{resume_id[:8]}.docx"
+            )
+            write_resume_docx(output, job=job, facts=facts)
+            content_hash = hashlib.sha256(output.read_bytes()).hexdigest()
+            facts_payload = [
+                {
+                    "id": fact["id"],
+                    "category": fact["category"],
+                    "fact_key": fact["fact_key"],
+                    "value": fact["value"],
+                }
+                for fact in facts
+            ]
+            repository.insert_resume_version(
+                resume_id=resume_id,
+                job_id=job_id,
+                file_path=str(output.resolve()),
+                facts_json=_serialize_json("facts", facts_payload),
+                template_name="biojob-ats-clean-v1",
+                content_hash=content_hash,
+                created_at=created_at,
+            )
+            self._insert_audit(
+                repository,
+                action="resume.generated",
+                entity_type="resume_version",
+                entity_id=resume_id,
+                actor=actor,
+                metadata={
+                    "job_id": job_id,
+                    "fact_ids": [fact["id"] for fact in facts],
+                    "content_hash": content_hash,
+                    "template_name": "biojob-ats-clean-v1",
+                },
+                created_at=created_at,
+            )
+            result = {
+                "id": resume_id,
+                "job_id": job_id,
+                "file_path": str(output.resolve()),
+                "facts": facts_payload,
+                "fact_ids": [fact["id"] for fact in facts],
+                "template_name": "biojob-ats-clean-v1",
+                "content_hash": content_hash,
+                "created_at": created_at,
+            }
+            connection.execute("COMMIT")
+            return result
+        except Exception:
+            _rollback(connection)
+            if output is not None and output.exists():
+                output.unlink(missing_ok=True)
+            raise
+        finally:
+            connection.close()
+
+    def list_resume_versions(self, job_id: str | None = None) -> list[dict[str, Any]]:
+        if job_id is not None:
+            job_id = _require_nonempty_string("job_id", job_id)
+        connection = self.database.connect()
+        try:
+            repository = BioJobRepository(connection)
+            if job_id is not None and repository.get_job(job_id) is None:
+                raise DomainNotFoundError(f"job not found: {job_id}")
+            return [
+                _resume_version_dict(row)
+                for row in repository.list_resume_versions(job_id)
+            ]
+        finally:
+            connection.close()
+
+    def export_application_workbook(self, *, actor: str) -> dict[str, Any]:
+        actor = _require_nonempty_string("actor", actor)
+        connection = self.database.connect()
+        try:
+            repository = BioJobRepository(connection)
+            jobs = [_job_dict(row) for row in repository.list_jobs()]
+            matches = {
+                row["job_id"]: _match_dict(row)
+                for row in repository.list_latest_job_matches()
+            }
+            for job in jobs:
+                job["latest_match"] = matches.get(job["id"])
+            candidates = []
+            for decision in CandidateDecision:
+                candidates.extend(
+                    _candidate_dict(row)
+                    for row in repository.list_candidates(
+                        decision=decision.value,
+                        query=None,
+                        direction=None,
+                        city=None,
+                    )
+                )
+            resumes = {
+                row["job_id"]: row["file_path"]
+                for row in repository.list_latest_resume_versions()
+            }
+        finally:
+            connection.close()
+
+        created_at = _utc_now()
+        export_id = str(uuid4())
+        export_dir = self.database.path.parent / "exports"
+        report_dir = export_dir / "match-reports"
+        report_dir.mkdir(parents=True, exist_ok=True)
+        report_paths: dict[str, str] = {}
+        for job_id, report in matches.items():
+            report_path = report_dir / f"{job_id}.json"
+            report_path.write_text(
+                json.dumps(report, ensure_ascii=False, indent=2, allow_nan=False),
+                encoding="utf-8",
+            )
+            report_paths[job_id] = str(report_path.resolve())
+        output = export_dir / f"BioJob-投递表-{created_at[:10]}-{export_id[:8]}.xlsx"
+        write_application_workbook(
+            output,
+            jobs=jobs,
+            candidates=candidates,
+            resume_by_job=resumes,
+            match_report_by_job=report_paths,
+        )
+        with self.database.connect() as audit_connection:
+            audit_connection.execute("BEGIN IMMEDIATE")
+            repository = BioJobRepository(audit_connection)
+            self._insert_audit(
+                repository,
+                action="applications.exported",
+                entity_type="application_export",
+                entity_id=export_id,
+                actor=actor,
+                metadata={
+                    "job_count": len(jobs),
+                    "candidate_count": len(candidates),
+                    "sheet_names": list(WORKBOOK_SHEETS),
+                },
+                created_at=created_at,
+            )
+            audit_connection.execute("COMMIT")
+        return {
+            "id": export_id,
+            "file_path": str(output.resolve()),
+            "sheet_names": list(WORKBOOK_SHEETS),
+            "job_count": len(jobs),
+            "candidate_count": len(candidates),
+            "created_at": created_at,
+        }
+
     def list_audit_log(
         self,
         *,
@@ -1837,6 +2145,36 @@ def _profile_fact_dict(row: sqlite3.Row) -> dict[str, Any]:
         field="value_json",
     )
     return result
+
+
+def _resume_version_dict(row: sqlite3.Row) -> dict[str, Any]:
+    result: dict[str, Any] = dict(row)
+    facts = _decode_json_field(
+        result.pop("facts_json"),
+        table="resume_versions",
+        entity_id=result["id"],
+        field="facts_json",
+    )
+    if not isinstance(facts, list) or any(
+        not isinstance(fact, dict)
+        or not isinstance(fact.get("id"), str)
+        or not isinstance(fact.get("category"), str)
+        or not isinstance(fact.get("fact_key"), str)
+        for fact in facts
+    ):
+        raise DomainDataCorruptionError(
+            f"corrupt resume_versions entity {result['id']}: facts_json has an invalid shape"
+        )
+    result["facts"] = facts
+    result["fact_ids"] = [fact["id"] for fact in facts]
+    return result
+
+
+def _safe_export_component(value: Any, fallback: str) -> str:
+    if not isinstance(value, str):
+        return fallback
+    cleaned = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "-", value).strip(" .-")
+    return (cleaned or fallback)[:60]
 
 
 def _match_dict(row: sqlite3.Row) -> dict[str, Any]:

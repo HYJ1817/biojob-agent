@@ -11,12 +11,17 @@ import { BioJobWorkbench } from './index'
 vi.mock('./api', () => ({
   createProfileFact: vi.fn(),
   decideCandidate: vi.fn(),
+  exportApplications: vi.fn(),
+  generateResume: vi.fn(),
   getBioJobDashboard: vi.fn(),
   getJobMatch: vi.fn(),
   importCandidate: vi.fn(),
+  importProfileDocument: vi.fn(),
   listCandidates: vi.fn(),
   listJobs: vi.fn(),
   listProfileFacts: vi.fn(),
+  listProfileDocuments: vi.fn(),
+  listResumeVersions: vi.fn(),
   listSourceRuns: vi.fn(),
   listSources: vi.fn(),
   patchJob: vi.fn(),
@@ -42,10 +47,10 @@ const candidate = {
   title: '生物工艺工程师'
 }
 
-function renderWorkbench() {
+function renderWorkbench(locale = 'zh') {
   return render(
     <MemoryRouter initialEntries={['/biojob']}>
-      <I18nProvider configClient={null} initialLocale="zh">
+      <I18nProvider configClient={null} initialLocale={locale as never}>
         <BioJobWorkbench />
       </I18nProvider>
     </MemoryRouter>
@@ -65,6 +70,9 @@ describe('BioJob workbench', () => {
     vi.mocked(api.listProfileFacts).mockResolvedValue([])
     vi.mocked(api.listSources).mockResolvedValue([])
     vi.mocked(api.decideCandidate).mockResolvedValue({ ...candidate, decision: 'kept' } as never)
+    vi.mocked(api.exportApplications).mockResolvedValue({ file_path: 'C:\\BioJob\\投递表.xlsx' } as never)
+    vi.mocked(api.generateResume).mockResolvedValue({ file_path: 'C:\\BioJob\\简历.docx' } as never)
+    vi.mocked(api.importProfileDocument).mockResolvedValue({ fact_count: 2 } as never)
   })
 
   it('shows the real job workflow in the first viewport', async () => {
@@ -102,5 +110,35 @@ describe('BioJob workbench', () => {
     fireEvent.click(screen.getByRole('button', { name: '重试' }))
 
     expect(await screen.findByRole('heading', { name: '秋招工作台' })).toBeTruthy()
+  })
+
+  it('imports a base resume and reveals generated Word and Excel files', async () => {
+    const preparingJob = {
+      ...candidate,
+      application: { status: 'preparing' },
+      company: { name: 'RemeGen' }
+    }
+    vi.mocked(api.listJobs).mockResolvedValue([preparingJob] as never)
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: {
+        revealPath: vi.fn().mockResolvedValue(true),
+        selectPaths: vi.fn().mockResolvedValue(['C:\\Users\\me\\base.docx'])
+      }
+    })
+    renderWorkbench('en')
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Profile facts' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Import base resume' }))
+    await waitFor(() => expect(api.importProfileDocument).toHaveBeenCalledWith('C:\\Users\\me\\base.docx'))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Applications' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Generate Word resume' }))
+    await waitFor(() => expect(api.generateResume).toHaveBeenCalledWith('job-1'))
+    await waitFor(() => expect(window.hermesDesktop?.revealPath).toHaveBeenCalledWith('C:\\BioJob\\简历.docx'))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Export Excel tracker' }))
+    await waitFor(() => expect(api.exportApplications).toHaveBeenCalled())
+    await waitFor(() => expect(window.hermesDesktop?.revealPath).toHaveBeenCalledWith('C:\\BioJob\\投递表.xlsx'))
   })
 })

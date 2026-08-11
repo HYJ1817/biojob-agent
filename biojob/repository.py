@@ -57,6 +57,42 @@ class BioJobRepository:
             "SELECT * FROM profile_facts ORDER BY created_at, rowid"
         ).fetchall()
 
+    def insert_profile_document(
+        self,
+        *,
+        document_id: str,
+        document_type: str,
+        original_name: str,
+        local_path: str,
+        sha256: str,
+        created_at: str,
+    ) -> None:
+        self.connection.execute(
+            "INSERT INTO profile_documents "
+            "(id, document_type, original_name, local_path, sha256, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (document_id, document_type, original_name, local_path, sha256, created_at),
+        )
+
+    def get_profile_document_by_sha256(self, sha256: str) -> sqlite3.Row | None:
+        return self.connection.execute(
+            "SELECT * FROM profile_documents WHERE sha256 = ? "
+            "ORDER BY created_at DESC, rowid DESC LIMIT 1",
+            (sha256,),
+        ).fetchone()
+
+    def list_profile_documents(self) -> list[sqlite3.Row]:
+        return self.connection.execute(
+            "SELECT * FROM profile_documents ORDER BY created_at DESC, rowid DESC"
+        ).fetchall()
+
+    def count_profile_facts_by_source_ref(self, source_ref: str) -> int:
+        row = self.connection.execute(
+            "SELECT COUNT(*) AS count FROM profile_facts WHERE source_ref = ?",
+            (source_ref,),
+        ).fetchone()
+        return int(row["count"]) if row is not None else 0
+
     def update_profile_fact_status(
         self,
         *,
@@ -487,6 +523,63 @@ class BioJobRepository:
             "WHERE job_matches.job_id = ? AND jobs.deleted_at IS NULL "
             "ORDER BY job_matches.created_at DESC, job_matches.rowid DESC",
             (job_id,),
+        ).fetchall()
+
+    def list_latest_job_matches(self) -> list[sqlite3.Row]:
+        return self.connection.execute(
+            "WITH ranked AS (SELECT job_matches.*, ROW_NUMBER() OVER ("
+            "PARTITION BY job_id ORDER BY created_at DESC, rowid DESC) AS rank "
+            "FROM job_matches) SELECT ranked.* FROM ranked JOIN jobs "
+            "ON jobs.id = ranked.job_id WHERE ranked.rank = 1 "
+            "AND jobs.deleted_at IS NULL"
+        ).fetchall()
+
+    def insert_resume_version(
+        self,
+        *,
+        resume_id: str,
+        job_id: str,
+        file_path: str,
+        facts_json: str,
+        template_name: str,
+        content_hash: str,
+        created_at: str,
+    ) -> None:
+        self.connection.execute(
+            "INSERT INTO resume_versions "
+            "(id, job_id, file_path, facts_json, template_name, content_hash, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                resume_id,
+                job_id,
+                file_path,
+                facts_json,
+                template_name,
+                content_hash,
+                created_at,
+            ),
+        )
+
+    def list_resume_versions(self, job_id: str | None = None) -> list[sqlite3.Row]:
+        if job_id is None:
+            return self.connection.execute(
+                "SELECT * FROM resume_versions ORDER BY created_at DESC, rowid DESC"
+            ).fetchall()
+        return self.connection.execute(
+            "SELECT resume_versions.* FROM resume_versions "
+            "JOIN jobs ON jobs.id = resume_versions.job_id "
+            "WHERE resume_versions.job_id = ? AND jobs.deleted_at IS NULL "
+            "ORDER BY resume_versions.created_at DESC, resume_versions.rowid DESC",
+            (job_id,),
+        ).fetchall()
+
+    def list_latest_resume_versions(self) -> list[sqlite3.Row]:
+        return self.connection.execute(
+            "WITH ranked AS (SELECT resume_versions.*, ROW_NUMBER() OVER ("
+            "PARTITION BY job_id ORDER BY created_at DESC, rowid DESC) AS rank "
+            "FROM resume_versions) SELECT ranked.* FROM ranked JOIN jobs "
+            "ON jobs.id = ranked.job_id WHERE ranked.rank = 1 "
+            "AND jobs.deleted_at IS NULL"
         ).fetchall()
 
     def insert_candidate_decision(

@@ -14,8 +14,11 @@ import { cn } from '@/lib/utils'
 import {
   createProfileFact,
   decideCandidate,
+  exportApplications,
+  generateResume,
   getBioJobDashboard,
   importCandidate,
+  importProfileDocument,
   listCandidates,
   listJobs,
   listProfileFacts,
@@ -442,7 +445,29 @@ function ApplicationsView({ busy, jobs, perform }: { busy: string | null; jobs: 
 
   return (
     <section>
-      <PageHeading subtitle={c.applicationSubtitle} title={c.applicationTitle} />
+      <PageHeading
+        action={
+          <Button
+            disabled={busy === 'export-applications'}
+            onClick={() =>
+              void perform(
+                'export-applications',
+                async () => {
+                  const result = await exportApplications()
+                  await window.hermesDesktop?.revealPath?.(result.file_path)
+                },
+                async () => {}
+              )
+            }
+            size="sm"
+            variant="secondary"
+          >
+            {c.exportTracker}
+          </Button>
+        }
+        subtitle={c.applicationSubtitle}
+        title={c.applicationTitle}
+      />
       {jobs.length === 0 ? (
         <EmptyState description={c.noApplicationsDesc} title={c.noApplications} />
       ) : (
@@ -499,6 +524,25 @@ function ApplicationsView({ busy, jobs, perform }: { busy: string | null; jobs: 
                 >
                   {c.runMatch}
                 </Button>
+                {job.application.status === 'preparing' && (
+                  <Button
+                    disabled={busy === `${job.id}:resume`}
+                    onClick={() =>
+                      void perform(
+                        `${job.id}:resume`,
+                        async () => {
+                          const result = await generateResume(job.id)
+                          await window.hermesDesktop?.revealPath?.(result.file_path)
+                        },
+                        async () => {}
+                      )
+                    }
+                    size="xs"
+                    variant="secondary"
+                  >
+                    {c.generateResume}
+                  </Button>
+                )}
               </div>
               {reports[job.id] && <MatchReport report={reports[job.id]} />}
             </article>
@@ -554,7 +598,32 @@ function FactsView({ busy, facts, perform }: { busy: string | null; facts: Profi
 
   return (
     <section>
-      <PageHeading subtitle={c.factsSubtitle} title={c.factsTitle} />
+      <PageHeading
+        action={
+          <Button
+            disabled={busy === 'profile-document-import'}
+            onClick={() =>
+              void perform('profile-document-import', async () => {
+                const paths = await window.hermesDesktop?.selectPaths({
+                  filters: [{ extensions: ['docx', 'pdf'], name: 'Resume documents' }],
+                  multiple: false,
+                  title: c.importResume
+                })
+
+                if (paths?.[0]) {
+                  await importProfileDocument(paths[0])
+                }
+              })
+            }
+            size="sm"
+            variant="secondary"
+          >
+            {c.importResume}
+          </Button>
+        }
+        subtitle={`${c.factsSubtitle} ${c.importResumeHint}`}
+        title={c.factsTitle}
+      />
       <form
         className="my-5 grid gap-3 border-y border-(--ui-stroke-tertiary) py-4 sm:grid-cols-[1fr_1fr_2fr_auto]"
         onSubmit={event => {

@@ -3,12 +3,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   createProfileFact,
   decideCandidate,
+  exportApplications,
+  generateResume,
   getBioJobDashboard,
   getJobMatch,
   importCandidate,
+  importProfileDocument,
   listCandidates,
   listJobs,
+  listProfileDocuments,
   listProfileFacts,
+  listResumeVersions,
   listSourceRuns,
   listSources,
   patchJob,
@@ -38,6 +43,8 @@ describe('BioJob desktop API boundary', () => {
     await listSources()
     await listSourceRuns('source 1')
     await getJobMatch('job 1')
+    await listProfileDocuments()
+    await listResumeVersions('job 1')
 
     expect(api.mock.calls.map(call => call[0].path)).toEqual([
       '/api/biojob/dashboard',
@@ -45,7 +52,9 @@ describe('BioJob desktop API boundary', () => {
       '/api/biojob/profile-facts?purpose=matching',
       '/api/biojob/sources',
       '/api/biojob/source-runs?source_id=source+1',
-      '/api/biojob/jobs/job%201/match'
+      '/api/biojob/jobs/job%201/match',
+      '/api/biojob/profile-documents',
+      '/api/biojob/jobs/job%201/resumes'
     ])
   })
 
@@ -80,6 +89,9 @@ describe('BioJob desktop API boundary', () => {
     await setProfileFactStatus('fact 1', 'confirmed')
     await updateSource('source 1', { enabled: false })
     await runSource('source 1')
+    await importProfileDocument('C:\\Users\\me\\resume.docx')
+    await generateResume('job 1')
+    await exportApplications()
 
     expect(api.mock.calls.map(call => call[0])).toEqual([
       { body: candidate, method: 'POST', path: '/api/biojob/candidates/import' },
@@ -101,7 +113,14 @@ describe('BioJob desktop API boundary', () => {
         path: '/api/biojob/profile-facts/fact%201'
       },
       { body: { enabled: false }, method: 'PATCH', path: '/api/biojob/sources/source%201' },
-      { body: {}, method: 'POST', path: '/api/biojob/sources/source%201/run' }
+      { body: {}, method: 'POST', path: '/api/biojob/sources/source%201/run' },
+      {
+        body: { file_path: 'C:\\Users\\me\\resume.docx' },
+        method: 'POST',
+        path: '/api/biojob/profile-documents/import'
+      },
+      { body: {}, method: 'POST', path: '/api/biojob/jobs/job%201/resumes' },
+      { body: {}, method: 'POST', path: '/api/biojob/exports/applications' }
     ])
   })
 })

@@ -1,13 +1,5 @@
 export type ApplicationStatus =
-  | 'considering'
-  | 'preparing'
-  | 'applied'
-  | 'assessment'
-  | 'interview'
-  | 'offer'
-  | 'rejected'
-  | 'withdrawn'
-  | 'expired'
+  'considering' | 'preparing' | 'applied' | 'assessment' | 'interview' | 'offer' | 'rejected' | 'withdrawn' | 'expired'
 
 export type CandidateDecision = 'pending' | 'kept' | 'ignored' | 'later' | 'error'
 export type FactStatus = 'pending' | 'confirmed' | 'rejected' | 'conflicted'
@@ -181,4 +173,34 @@ export interface ProfileFactCreatePayload {
   source_type: string
   value: unknown
   visibility: FactVisibility
+}
+
+export interface ProfileDocument {
+  created_at: string
+  document_type: 'docx' | 'pdf'
+  fact_count: number
+  id: string
+  local_path: string
+  original_name: string
+  sha256: string
+}
+
+export interface ResumeVersion {
+  content_hash: string
+  created_at: string
+  fact_ids: string[]
+  facts: Array<{ category: string; fact_key: string; id: string; value: unknown }>
+  file_path: string
+  id: string
+  job_id: string
+  template_name: string
+}
+
+export interface ApplicationExport {
+  candidate_count: number
+  created_at: string
+  file_path: string
+  id: string
+  job_count: number
+  sheet_names: string[]
 }

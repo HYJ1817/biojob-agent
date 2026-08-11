@@ -1,4 +1,5 @@
 import type {
+  ApplicationExport,
   ApplicationStatus,
   BioJobCandidate,
   BioJobDashboard,
@@ -9,8 +10,10 @@ import type {
   CandidateDecision,
   CandidateImportPayload,
   FactStatus,
+  ProfileDocument,
   ProfileFact,
-  ProfileFactCreatePayload
+  ProfileFactCreatePayload,
+  ResumeVersion
 } from './types'
 
 interface ApiOptions {
@@ -93,6 +96,26 @@ export const setProfileFactStatus = (factId: string, status: FactStatus) =>
     method: 'PATCH',
     path: `/api/biojob/profile-facts/${encodeURIComponent(factId)}`
   })
+
+export const listProfileDocuments = () => itemList<ProfileDocument>('/api/biojob/profile-documents')
+export const importProfileDocument = (filePath: string) =>
+  call<ProfileDocument>({
+    body: { file_path: filePath },
+    method: 'POST',
+    path: '/api/biojob/profile-documents/import'
+  })
+
+export const listResumeVersions = (jobId: string) =>
+  itemList<ResumeVersion>(`/api/biojob/jobs/${encodeURIComponent(jobId)}/resumes`)
+export const generateResume = (jobId: string) =>
+  call<ResumeVersion>({
+    body: {},
+    method: 'POST',
+    path: `/api/biojob/jobs/${encodeURIComponent(jobId)}/resumes`
+  })
+
+export const exportApplications = () =>
+  call<ApplicationExport>({ body: {}, method: 'POST', path: '/api/biojob/exports/applications' })
 
 export const listSources = () => itemList<BioJobSource>('/api/biojob/sources')
 export const updateSource = (sourceId: string, body: { enabled?: boolean }) =>

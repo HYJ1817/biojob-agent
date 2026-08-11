@@ -146,6 +146,12 @@ dependencies = [
   # Hence the ``sys_platform == 'win32'`` marker: the dep (and its portalocker
   # / pywin32 tree) ships only where it's actually used.
   "concurrent-log-handler==0.9.29; sys_platform == 'win32'",
+  # BioJob local document pipeline. These are intentionally core because the
+  # Windows desktop bootstrap installs the base project and resume/workbook
+  # generation must work offline after first launch.
+  "python-docx==1.2.0",
+  "pypdf==6.10.0",
+  "XlsxWriter==3.2.9",
   # First-party lifecycle and shared-metrics runtime. Relay 0.6 is the minimum
   # lossless provider-codec contract. Managed calls pass request/response data
   # through this native module in-process; shared metrics installs no network

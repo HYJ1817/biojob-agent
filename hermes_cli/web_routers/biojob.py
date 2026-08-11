@@ -17,6 +17,7 @@ from biojob.api_models import (
     JobCreate,
     JobPatch,
     MatchRequest,
+    ProfileDocumentImport,
     ProfileFactCreate,
     ProfileFactPatch,
     SourceCreate,
@@ -97,6 +98,23 @@ async def patch_profile_fact(fact_id: str, body: ProfileFactPatch) -> dict[str, 
     assert status is not None
     return await _run_service(
         lambda: BioJobService().set_profile_fact_status(fact_id, status, actor=_ACTOR)
+    )
+
+
+@router.get("/profile-documents")
+async def list_profile_documents() -> dict[str, list[dict[str, Any]]]:
+    return {
+        "items": await _run_service(lambda: BioJobService().list_profile_documents())
+    }
+
+
+@router.post("/profile-documents/import", status_code=201)
+async def import_profile_document(body: ProfileDocumentImport) -> dict[str, Any]:
+    return await _run_service(
+        lambda: BioJobService().import_profile_document(
+            body.file_path,
+            actor=_ACTOR,
+        )
     )
 
 
@@ -217,6 +235,29 @@ async def match_job(job_id: str, body: MatchRequest) -> dict[str, Any]:
 @router.get("/jobs/{job_id}/match")
 async def get_job_match(job_id: str) -> dict[str, Any]:
     return await _run_service(lambda: BioJobService().get_latest_match(job_id))
+
+
+@router.post("/jobs/{job_id}/resumes", status_code=201)
+async def generate_resume(job_id: str) -> dict[str, Any]:
+    return await _run_service(
+        lambda: BioJobService().generate_resume(job_id, actor=_ACTOR)
+    )
+
+
+@router.get("/jobs/{job_id}/resumes")
+async def list_resume_versions(job_id: str) -> dict[str, list[dict[str, Any]]]:
+    return {
+        "items": await _run_service(
+            lambda: BioJobService().list_resume_versions(job_id)
+        )
+    }
+
+
+@router.post("/exports/applications", status_code=201)
+async def export_applications() -> dict[str, Any]:
+    return await _run_service(
+        lambda: BioJobService().export_application_workbook(actor=_ACTOR)
+    )
 
 
 @router.patch("/jobs/{job_id}")
