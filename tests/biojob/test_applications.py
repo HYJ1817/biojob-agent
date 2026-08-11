@@ -45,6 +45,16 @@ def create_job(service, **overrides):
     return service.create_job(**arguments)
 
 
+def assert_corrupt_history(service, job, event_id):
+    with pytest.raises(DomainDataCorruptionError) as exc_info:
+        service.list_application_events(job["id"])
+    message = str(exc_info.value)
+    assert job["id"] in message
+    assert job["application"]["id"] in message
+    assert event_id in message
+    assert exc_info.value.__cause__ is None
+
+
 def test_application_status_enum_has_the_persisted_values():
     assert {status.value for status in ApplicationStatus} == {
         "considering",
@@ -514,7 +524,14 @@ def test_update_status_readback_is_inside_the_write_transaction(
 
 @pytest.mark.parametrize(
     "invalid_value",
-    ["2026-08-14T09:00:00", "2026-02-30T09:00:00Z", 3, []],
+    [
+        "2026-08-14T09:00:00",
+        "2026-02-30T09:00:00Z",
+        "0001-01-01T00:00:00+14:00",
+        "9999-12-31T23:59:59-14:00",
+        3,
+        [],
+    ],
 )
 def test_next_follow_up_requires_valid_timezone_aware_iso_datetime(
     service,
@@ -536,6 +553,21 @@ def test_create_and_update_normalize_or_clear_next_follow_up(service):
     cleared = service.update_job(job["id"], actor="user", next_follow_up_at=None)
 
     assert cleared["application"]["next_follow_up_at"] is None
+
+
+def test_next_follow_up_normalizes_valid_datetime_boundaries(service):
+    job = create_job(
+        service,
+        next_follow_up_at="0001-01-01T14:00:00+14:00",
+    )
+    assert job["application"]["next_follow_up_at"] == "0001-01-01T00:00:00Z"
+
+    updated = service.update_job(
+        job["id"],
+        actor="user",
+        next_follow_up_at="9999-12-31T09:59:59-14:00",
+    )
+    assert updated["application"]["next_follow_up_at"] == ("9999-12-31T23:59:59Z")
 
 
 def test_soft_delete_hides_job_and_history_from_public_operations(service):
@@ -572,6 +604,29 @@ def test_dashboard_counts_group_application_status_and_exclude_deleted(service):
 
     assert counts == {"considering": 1, "preparing": 1}
     assert considering["id"] != preparing["id"]
+
+
+def test_dashboard_repository_aggregates_status_counts_in_sql(database, service):
+    first = create_job(service, title="first")
+    second = create_job(service, title="second")
+    preparing = create_job(service, title="preparing")
+    service.transition_application(preparing["id"], "preparing", actor="user")
+
+    with closing(database.connect()) as connection:
+        rows = BioJobRepository(connection).dashboard_counts()
+
+    assert len(rows) == 2
+    grouped = {row["status"]: dict(row) for row in rows}
+    assert grouped["considering"]["count"] == 2
+    assert grouped["considering"]["sample_application_id"] in {
+        first["application"]["id"],
+        second["application"]["id"],
+    }
+    assert grouped["preparing"]["count"] == 1
+    assert (
+        grouped["preparing"]["sample_application_id"]
+        == (preparing["application"]["id"])
+    )
 
 
 def test_concurrent_same_transition_has_one_success_and_unbroken_event_chain(
@@ -701,6 +756,68 @@ def test_corrupt_application_event_status_fails_closed(
     assert event["id"] in str(exc_info.value)
     assert field in str(exc_info.value)
     assert exc_info.value.__cause__ is None
+
+
+def test_application_history_rejects_a_valid_enum_chain_break(database, service):
+    job = create_job(service)
+    service.transition_application(job["id"], "preparing", actor="user")
+    service.transition_application(job["id"], "applied", actor="user")
+    broken_event = service.list_application_events(job["id"])[-1]
+    with closing(database.connect()) as connection:
+        connection.execute(
+            "UPDATE application_events SET old_status = ?, new_status = ? WHERE id = ?",
+            ("considering", "withdrawn", broken_event["id"]),
+        )
+
+    assert_corrupt_history(service, job, broken_event["id"])
+
+
+def test_application_history_rejects_an_illegal_valid_enum_jump(database, service):
+    job = create_job(service)
+    service.transition_application(job["id"], "preparing", actor="user")
+    service.transition_application(job["id"], "applied", actor="user")
+    broken_event = service.list_application_events(job["id"])[-1]
+    with closing(database.connect()) as connection:
+        connection.execute(
+            "UPDATE application_events SET new_status = ? WHERE id = ?",
+            ("offer", broken_event["id"]),
+        )
+
+    assert_corrupt_history(service, job, broken_event["id"])
+
+
+def test_application_history_rejects_an_abnormal_first_event(database, service):
+    job = create_job(service)
+    first_event = service.list_application_events(job["id"])[0]
+    with closing(database.connect()) as connection:
+        connection.execute(
+            "UPDATE application_events SET new_status = ? WHERE id = ?",
+            ("preparing", first_event["id"]),
+        )
+
+    assert_corrupt_history(service, job, first_event["id"])
+
+
+def test_application_history_rejects_multiple_initial_events(database, service):
+    job = create_job(service)
+    extra_event_id = "ffffffff-ffff-4fff-8fff-ffffffffffff"
+    with closing(database.connect()) as connection:
+        connection.execute(
+            "INSERT INTO application_events "
+            "(id, application_id, actor, old_status, new_status, note, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                extra_event_id,
+                job["application"]["id"],
+                "probe",
+                None,
+                "considering",
+                "",
+                "9999-12-31T23:59:59+00:00",
+            ),
+        )
+
+    assert_corrupt_history(service, job, extra_event_id)
 
 
 def test_missing_or_deleted_job_operations_raise_not_found(service):

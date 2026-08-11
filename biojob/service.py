@@ -468,8 +468,10 @@ class BioJobService:
             rows = BioJobRepository(connection).dashboard_counts()
             counts: dict[str, int] = {}
             for row in rows:
-                status = _parse_persisted_application_status(row["status"], row["id"])
-                counts[status] = counts.get(status, 0) + 1
+                status = _parse_persisted_application_status(
+                    row["status"], row["sample_application_id"]
+                )
+                counts[status] = row["count"]
             return counts
         finally:
             connection.close()
@@ -478,10 +480,17 @@ class BioJobService:
         job_id = _require_nonempty_string("job_id", job_id)
         connection = self.database.connect()
         try:
-            rows = BioJobRepository(connection).list_application_events(job_id)
-            if rows is None:
+            history = BioJobRepository(connection).list_application_events(job_id)
+            if history is None:
                 raise DomainNotFoundError(f"job not found: {job_id}")
-            return [_application_event_dict(row) for row in rows]
+            application_id, rows = history
+            events = [_application_event_dict(row, job_id=job_id) for row in rows]
+            _validate_application_history(
+                events,
+                job_id=job_id,
+                application_id=application_id,
+            )
+            return events
         finally:
             connection.close()
 
@@ -771,15 +780,13 @@ def _parse_next_follow_up_at(value: Any) -> str | None:
     try:
         parsed = datetime.fromisoformat(value)
         offset = parsed.utcoffset()
-    except (TypeError, ValueError):
+        if offset is None:
+            raise ValueError("timezone is required")
+        return parsed.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    except (OverflowError, TypeError, ValueError):
         raise DomainValidationError(
             "next_follow_up_at must be a timezone-aware ISO-8601 datetime or null"
         ) from None
-    if offset is None:
-        raise DomainValidationError(
-            "next_follow_up_at must be a timezone-aware ISO-8601 datetime or null"
-        )
-    return parsed.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def _parse_application_status(value: Any) -> str:
@@ -936,23 +943,95 @@ def _job_dict(row: sqlite3.Row) -> dict[str, Any]:
     return result
 
 
-def _application_event_dict(row: sqlite3.Row) -> dict[str, Any]:
+def _application_event_dict(
+    row: sqlite3.Row,
+    *,
+    job_id: str,
+) -> dict[str, Any]:
     result = dict(row)
     old_status = result["old_status"]
     if old_status is not None:
-        result["old_status"] = _parse_persisted_application_status(
-            old_status,
-            result["id"],
-            field="old_status",
-            entity_type="application_event",
+        try:
+            result["old_status"] = _parse_persisted_application_status(
+                old_status, result["id"]
+            )
+        except DomainDataCorruptionError:
+            _raise_corrupt_application_history(
+                job_id=job_id,
+                application_id=result["application_id"],
+                event_id=result["id"],
+                detail="old_status is invalid",
+            )
+    try:
+        result["new_status"] = _parse_persisted_application_status(
+            result["new_status"], result["id"]
         )
-    result["new_status"] = _parse_persisted_application_status(
-        result["new_status"],
-        result["id"],
-        field="new_status",
-        entity_type="application_event",
-    )
+    except DomainDataCorruptionError:
+        _raise_corrupt_application_history(
+            job_id=job_id,
+            application_id=result["application_id"],
+            event_id=result["id"],
+            detail="new_status is invalid",
+        )
     return result
+
+
+def _validate_application_history(
+    events: list[dict[str, Any]],
+    *,
+    job_id: str,
+    application_id: str,
+) -> None:
+    if not events:
+        _raise_corrupt_application_history(
+            job_id=job_id,
+            application_id=application_id,
+            event_id="<missing>",
+            detail="initial event is missing",
+        )
+    first = events[0]
+    if (
+        first["old_status"] is not None
+        or first["new_status"] != ApplicationStatus.CONSIDERING.value
+    ):
+        _raise_corrupt_application_history(
+            job_id=job_id,
+            application_id=application_id,
+            event_id=first["id"],
+            detail="initial event must enter considering from no prior status",
+        )
+    previous_status = first["new_status"]
+    for event in events[1:]:
+        old_status = event["old_status"]
+        new_status = event["new_status"]
+        if old_status != previous_status:
+            _raise_corrupt_application_history(
+                job_id=job_id,
+                application_id=application_id,
+                event_id=event["id"],
+                detail="old_status does not match the previous new_status",
+            )
+        if new_status not in _APPLICATION_TRANSITIONS[old_status]:
+            _raise_corrupt_application_history(
+                job_id=job_id,
+                application_id=application_id,
+                event_id=event["id"],
+                detail=f"transition from {old_status!r} to {new_status!r} is invalid",
+            )
+        previous_status = new_status
+
+
+def _raise_corrupt_application_history(
+    *,
+    job_id: str,
+    application_id: str,
+    event_id: str,
+    detail: str,
+) -> None:
+    raise DomainDataCorruptionError(
+        f"corrupt application history for job {job_id}, application "
+        f"{application_id}, event {event_id}: {detail}"
+    ) from None
 
 
 def _audit_dict(row: sqlite3.Row) -> dict[str, Any]:

@@ -388,27 +388,32 @@ class BioJobRepository:
         )
         return cursor.rowcount
 
-    def list_application_events(self, job_id: str) -> list[sqlite3.Row] | None:
+    def list_application_events(
+        self, job_id: str
+    ) -> tuple[str, list[sqlite3.Row]] | None:
         active = self.connection.execute(
-            "SELECT 1 FROM jobs WHERE id = ? AND deleted_at IS NULL",
+            "SELECT applications.id FROM jobs "
+            "JOIN applications ON applications.job_id = jobs.id "
+            "WHERE jobs.id = ? AND jobs.deleted_at IS NULL",
             (job_id,),
         ).fetchone()
         if active is None:
             return None
-        return self.connection.execute(
+        rows = self.connection.execute(
             "SELECT application_events.* FROM application_events "
             "JOIN applications ON applications.id = application_events.application_id "
             "WHERE applications.job_id = ? "
             "ORDER BY application_events.created_at, application_events.rowid",
             (job_id,),
         ).fetchall()
+        return active["id"], rows
 
     def dashboard_counts(self) -> list[sqlite3.Row]:
         return self.connection.execute(
-            "SELECT applications.id, applications.status FROM applications "
+            "SELECT applications.status, COUNT(*) AS count, "
+            "MIN(applications.id) AS sample_application_id FROM applications "
             "JOIN jobs ON jobs.id = applications.job_id "
-            "WHERE jobs.deleted_at IS NULL "
-            "ORDER BY applications.status, applications.id"
+            "WHERE jobs.deleted_at IS NULL GROUP BY applications.status"
         ).fetchall()
 
 
