@@ -399,6 +399,33 @@ def test_schema_contains_relationship_query_indexes(tmp_path):
     assert EXPECTED_INDEXES <= indexes
 
 
+def test_audit_log_index_supports_entity_history_queries(tmp_path):
+    db = BioJobDatabase(tmp_path / "biojob.db")
+    db.initialize()
+
+    with closing(db.connect()) as conn:
+        indexed_columns = [
+            row["name"]
+            for row in conn.execute(
+                "PRAGMA index_info(idx_audit_log_entity_created)"
+            )
+        ]
+        plan_details = [
+            row["detail"]
+            for row in conn.execute(
+                "EXPLAIN QUERY PLAN "
+                "SELECT * FROM audit_log "
+                "WHERE entity_id = ? ORDER BY created_at",
+                ("entity-1",),
+            )
+        ]
+
+    assert indexed_columns == ["entity_id", "created_at"]
+    assert any("idx_audit_log_entity_created" in detail for detail in plan_details)
+    assert not any("SCAN AUDIT_LOG" in detail.upper() for detail in plan_details)
+    assert not any("TEMP B-TREE" in detail.upper() for detail in plan_details)
+
+
 def test_foreign_keys_and_check_constraints_are_enforced(tmp_path):
     db = BioJobDatabase(tmp_path / "biojob.db")
     db.initialize()

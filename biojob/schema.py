@@ -209,7 +209,7 @@ MIGRATIONS: Sequence[tuple[int, str]] = (
         CREATE INDEX IF NOT EXISTS idx_resume_versions_job_created
             ON resume_versions(job_id, created_at);
         CREATE INDEX IF NOT EXISTS idx_audit_log_entity_created
-            ON audit_log(entity_type, entity_id, created_at);
+            ON audit_log(entity_id, created_at);
         """,
     ),
 )
