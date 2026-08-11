@@ -416,6 +416,8 @@ _JOB_WITH_APPLICATION_SELECT = """
 SELECT
     jobs.*,
     companies.canonical_name AS company_name,
+    companies.company_type AS company_company_type,
+    companies.city AS company_city,
     applications.id AS application_id,
     applications.status AS application_status,
     applications.applied_at AS application_applied_at,

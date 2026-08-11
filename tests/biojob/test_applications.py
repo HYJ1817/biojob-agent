@@ -83,6 +83,18 @@ def test_create_job_preserves_links_upserts_company_and_writes_initial_history(
     assert first["detail_url"] == "https://example.test/jobs/1"
     assert first["apply_url"] == "https://example.test/apply/1"
     assert first["careers_url"] == "https://example.test/careers"
+    assert first["company"] == {
+        "id": first["company_id"],
+        "canonical_name": first["company_name"],
+        "name": first["company_name"],
+        "company_type": None,
+        "city": None,
+    }
+    assert first["links"] == {
+        "detail": "https://example.test/jobs/1",
+        "apply": "https://example.test/apply/1",
+        "careers": "https://example.test/careers",
+    }
     assert first["jd_text"] == "第一行\n  第二行"
     assert first["notes"] == "重点岗位\n保留换行"
     assert first["application"]["status"] == "considering"
@@ -253,6 +265,7 @@ def test_blank_optional_url_is_stored_as_none(service):
     assert job["detail_url"] is None
     assert job["apply_url"] is None
     assert job["careers_url"] is None
+    assert job["links"] == {"detail": None, "apply": None, "careers": None}
 
 
 @pytest.mark.parametrize("status", ["opening", "", None, 3])
@@ -300,6 +313,18 @@ def test_list_and_get_jobs_are_stable_and_embed_application(
     assert [job["id"] for job in listed] == [second["id"], first["id"]]
     assert service.get_job(first["id"]) == first
     assert all(job["application"]["status"] == "considering" for job in listed)
+    assert listed[0]["company"] == {
+        "id": listed[0]["company_id"],
+        "canonical_name": listed[0]["company_name"],
+        "name": listed[0]["company_name"],
+        "company_type": None,
+        "city": None,
+    }
+    assert listed[0]["links"] == {
+        "detail": "https://example.test/jobs/1",
+        "apply": "https://example.test/apply/1",
+        "careers": "https://example.test/careers",
+    }
     assert listed[0]["detail_url"] == "https://example.test/jobs/1"
     assert listed[0]["apply_url"] == "https://example.test/apply/1"
     assert listed[0]["careers_url"] == "https://example.test/careers"
@@ -339,6 +364,12 @@ def test_update_job_uses_whitelist_updates_application_fields_and_audits(service
     assert updated["city"] == "上海"
     assert updated["lifecycle_status"] == "closed"
     assert updated["application"]["next_follow_up_at"] == ("2026-08-14T09:00:00+08:00")
+    assert updated["company"]["canonical_name"] == updated["company_name"]
+    assert updated["links"] == {
+        "detail": "https://example.test/jobs/1",
+        "apply": "https://example.test/apply/1",
+        "careers": "https://example.test/careers",
+    }
     audit = service.list_audit_log(entity_id=job["id"])
     assert audit[-1]["action"] == "job.updated"
     assert audit[-1]["actor"] == "editor"

@@ -827,7 +827,21 @@ def _application_from_job_row(row: sqlite3.Row) -> dict[str, Any]:
 def _job_dict(row: sqlite3.Row) -> dict[str, Any]:
     result = dict(row)
     application = _application_from_job_row(row)
+    company = {
+        "id": row["company_id"],
+        "canonical_name": row["company_name"],
+        "name": row["company_name"],
+        "company_type": row["company_company_type"],
+        "city": row["company_city"],
+    }
+    links = {
+        "detail": row["detail_url"],
+        "apply": row["apply_url"],
+        "careers": row["careers_url"],
+    }
     for field in (
+        "company_company_type",
+        "company_city",
         "application_id",
         "application_status",
         "application_applied_at",
@@ -837,6 +851,8 @@ def _job_dict(row: sqlite3.Row) -> dict[str, Any]:
         "application_updated_at",
     ):
         result.pop(field)
+    result["company"] = company
+    result["links"] = links
     result["application"] = application
     return result
 
