@@ -317,6 +317,7 @@ function downloadInstallScript(ref, destPath) {
 async function resolveInstallScript({
   installStamp,
   sourceRepoRoot,
+  bundledScriptPath = null,
   hermesHome,
   emit,
   _download = downloadInstallScript
@@ -330,6 +331,17 @@ async function resolveInstallScript({
     emit({ type: 'log', line: `[bootstrap] using local ${installScriptName()} at ${localScript}` })
 
     return { path: localScript, source: 'local', kind: installScriptKind() }
+  }
+
+  if (bundledScriptPath) {
+    try {
+      await fsp.access(bundledScriptPath, fs.constants.R_OK)
+      emit({ type: 'log', line: `[bootstrap] using bundled ${installScriptName()} at ${bundledScriptPath}` })
+
+      return { path: bundledScriptPath, source: 'bundle', kind: installScriptKind() }
+    } catch {
+      // Compatibility path for older packages without bundled resources.
+    }
   }
 
   // 2. Packaged path: download from GitHub at the install stamp's ref.
@@ -662,15 +674,19 @@ function spawnBash(scriptPath, args, { emit, stageName, abortSignal, hermesHome 
 // a repair/update path and must not let an old packaged app detach the checkout
 // back to the commit baked into that app. All-zero fallback stamps are never
 // passed as -Commit/--commit — only the branch is used (#50823 / #50864 review).
-function buildPinArgs(installStamp, { pinCommit = true } = {}) {
+function buildPinArgs(installStamp, { pinCommit = true, localArchive = null } = {}) {
   const args = []
 
-  if (pinCommit && installStamp && isPinnedCommit(installStamp.commit)) {
+  if (pinCommit && !localArchive && installStamp && isPinnedCommit(installStamp.commit)) {
     args.push('-Commit', installStamp.commit)
   }
 
   if (installStamp && installStamp.branch) {
     args.push('-Branch', installStamp.branch)
+  }
+
+  if (localArchive) {
+    args.push('-LocalArchive', localArchive)
   }
 
   return args
@@ -690,12 +706,21 @@ function buildPosixPinArgs({ installStamp, activeRoot, hermesHome, pinCommit = t
   return args
 }
 
-async function fetchManifest({ scriptPath, installerKind, emit, hermesHome, activeRoot, installStamp, pinCommit }) {
+async function fetchManifest({
+  scriptPath,
+  installerKind,
+  emit,
+  hermesHome,
+  activeRoot,
+  installStamp,
+  pinCommit,
+  localArchive
+}) {
   const isPosix = installerKind === 'posix'
 
   const args = isPosix
     ? ['--manifest', ...buildPosixPinArgs({ installStamp, activeRoot, hermesHome, pinCommit })]
-    : ['-Manifest', ...buildPinArgs(installStamp, { pinCommit })]
+    : ['-Manifest', ...buildPinArgs(installStamp, { pinCommit, localArchive })]
 
   const result = await (isPosix ? spawnBash : spawnPowerShell)(scriptPath, args, {
     emit,
@@ -761,7 +786,8 @@ async function runStage({
   activeRoot,
   abortSignal,
   installStamp,
-  pinCommit
+  pinCommit,
+  localArchive
 }) {
   const startedAt = Date.now()
   emit({ type: 'stage', name: stage.name, state: 'running' })
@@ -776,7 +802,7 @@ async function runStage({
         '--json',
         ...buildPosixPinArgs({ installStamp, activeRoot, hermesHome, pinCommit })
       ]
-    : ['-Stage', stage.name, '-NonInteractive', '-Json', ...buildPinArgs(installStamp, { pinCommit })]
+    : ['-Stage', stage.name, '-NonInteractive', '-Json', ...buildPinArgs(installStamp, { pinCommit, localArchive })]
 
   const result = await (isPosix ? spawnBash : spawnPowerShell)(scriptPath, args, {
     emit,
@@ -861,6 +887,8 @@ async function runBootstrap(opts) {
     installStamp,
     activeRoot,
     sourceRepoRoot,
+    bundledScriptPath,
+    localArchive,
     hermesHome,
     logRoot,
     onEvent,
@@ -927,7 +955,14 @@ async function runBootstrap(opts) {
     }
 
     // 1. Resolve the platform installer.
-    const scriptInfo = await resolveInstallScript({ installStamp, sourceRepoRoot, hermesHome, emit })
+    const scriptInfo = await resolveInstallScript({
+      installStamp,
+      sourceRepoRoot,
+      bundledScriptPath,
+      hermesHome,
+      emit
+    })
+
     const installerKind = scriptInfo.kind || 'powershell'
 
     // 2. Fetch manifest
@@ -938,7 +973,8 @@ async function runBootstrap(opts) {
       hermesHome,
       activeRoot,
       installStamp,
-      pinCommit
+      pinCommit,
+      localArchive
     })
 
     emit({
@@ -967,7 +1003,8 @@ async function runBootstrap(opts) {
         activeRoot,
         abortSignal,
         installStamp,
-        pinCommit
+        pinCommit,
+        localArchive
       })
 
       if (ev.state === 'failed') {

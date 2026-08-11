@@ -31,6 +31,10 @@ param(
     [string]$Tag = "",
     [string]$HermesHome = $(if ($env:HERMES_HOME) { $env:HERMES_HOME } else { "$env:LOCALAPPDATA\hermes" }),
     [string]$InstallDir = $(if ($env:HERMES_HOME) { "$env:HERMES_HOME\hermes-agent" } else { "$env:LOCALAPPDATA\hermes\hermes-agent" }),
+    # Optional repository bundle shipped inside the BioJob desktop installer.
+    # It makes first launch independent of repository visibility and GitHub
+    # credentials while preserving a real git checkout and pinned commit.
+    [string]$LocalArchive = "",
 
     # --- Stage protocol (additive; default invocation behaves as before) ----
     # See the "Stage protocol" section near the bottom of the file for the
@@ -2094,14 +2098,55 @@ function Install-Repository {
         $env:GIT_CONFIG_VALUE_0 = "false"
         git config --global windows.appendAtomically false 2>$null
 
+        if ($LocalArchive) {
+            if (-not (Test-Path -LiteralPath $LocalArchive -PathType Leaf)) {
+                throw "Bundled repository payload was not found: $LocalArchive"
+            }
+            Write-Info "Installing the bundled BioJob repository payload..."
+            $archiveLocationPushed = $false
+            try {
+                New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
+                Expand-Archive -LiteralPath $LocalArchive -DestinationPath $InstallDir -Force
+
+                $requiredPayloadFiles = @("pyproject.toml", "apps\desktop\package.json")
+                foreach ($relativePath in $requiredPayloadFiles) {
+                    $requiredPath = Join-Path $InstallDir $relativePath
+                    if (-not (Test-Path -LiteralPath $requiredPath -PathType Leaf)) {
+                        throw "Bundled repository payload is invalid: missing $relativePath"
+                    }
+                }
+
+                Push-Location $InstallDir
+                $archiveLocationPushed = $true
+                git -c windows.appendAtomically=false init 2>$null
+                if ($LASTEXITCODE -ne 0) { throw "Could not initialize bundled repository" }
+                git -c windows.appendAtomically=false config core.autocrlf false 2>$null
+                if ($LASTEXITCODE -ne 0) { throw "Could not configure bundled repository" }
+                git -c windows.appendAtomically=false add -A 2>$null
+                if ($LASTEXITCODE -ne 0) { throw "Could not stage bundled repository" }
+                git -c user.name="BioJob Installer" -c user.email="installer@biojob.local" commit -m "BioJob packaged source" 2>$null
+                if ($LASTEXITCODE -ne 0) { throw "Could not commit bundled repository" }
+                git -c windows.appendAtomically=false branch -M $Branch 2>$null
+                if ($LASTEXITCODE -ne 0) { throw "Could not name bundled repository branch" }
+                $cloneSuccess = $true
+                Write-Success "Bundled repository payload installed"
+            } catch {
+                throw "Bundled repository payload could not be installed: $_"
+            } finally {
+                if ($archiveLocationPushed) { Pop-Location }
+            }
+        }
+
         # Try SSH first, then HTTPS, with -c flag for atomic write fix
-        Write-Info "Trying SSH clone..."
-        $env:GIT_SSH_COMMAND = "ssh -o BatchMode=yes -o ConnectTimeout=5"
-        try {
-            Invoke-NativeWithRelaxedErrorAction { git -c windows.appendAtomically=false clone --depth 1 --branch $Branch $RepoUrlSsh $InstallDir }
-            if ($LASTEXITCODE -eq 0) { $cloneSuccess = $true }
-        } catch { }
-        $env:GIT_SSH_COMMAND = $null
+        if (-not $cloneSuccess) {
+            Write-Info "Trying SSH clone..."
+            $env:GIT_SSH_COMMAND = "ssh -o BatchMode=yes -o ConnectTimeout=5"
+            try {
+                Invoke-NativeWithRelaxedErrorAction { git -c windows.appendAtomically=false clone --depth 1 --branch $Branch $RepoUrlSsh $InstallDir }
+                if ($LASTEXITCODE -eq 0) { $cloneSuccess = $true }
+            } catch { }
+            $env:GIT_SSH_COMMAND = $null
+        }
 
         if (-not $cloneSuccess) {
             if (Test-Path $InstallDir) { Remove-Item -Recurse -Force $InstallDir -ErrorAction SilentlyContinue }
@@ -4019,7 +4064,7 @@ $InstallStages = @(
     @{ Name = "git";              Title = "Installing Git";                       Category = "prereqs";      NeedsUserInput = $false; Worker = "Stage-Git" }
     @{ Name = "node";             Title = "Detecting Node.js";                    Category = "prereqs";      NeedsUserInput = $false; Worker = "Stage-Node" }
     @{ Name = "system-packages";  Title = "Installing ripgrep and ffmpeg";        Category = "prereqs";      NeedsUserInput = $false; Worker = "Stage-SystemPackages" }
-    @{ Name = "repository";       Title = "Cloning Hermes repository";            Category = "install";      NeedsUserInput = $false; Worker = "Stage-Repository" }
+    @{ Name = "repository";       Title = "Installing BioJob Agent files";         Category = "install";      NeedsUserInput = $false; Worker = "Stage-Repository" }
     @{ Name = "venv";             Title = "Creating Python virtual environment";  Category = "install";      NeedsUserInput = $false; Worker = "Stage-Venv" }
     @{ Name = "dependencies";     Title = "Installing Python dependencies";       Category = "install";      NeedsUserInput = $false; Worker = "Stage-Dependencies" }
     @{ Name = "node-deps";        Title = "Installing Node.js dependencies";      Category = "install";      NeedsUserInput = $false; Worker = "Stage-NodeDeps" }

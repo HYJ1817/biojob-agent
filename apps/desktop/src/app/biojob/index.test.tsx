@@ -118,6 +118,7 @@ describe('BioJob workbench', () => {
       application: { status: 'preparing' },
       company: { name: 'RemeGen' }
     }
+
     vi.mocked(api.listJobs).mockResolvedValue([preparingJob] as never)
     Object.defineProperty(window, 'hermesDesktop', {
       configurable: true,

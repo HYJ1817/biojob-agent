@@ -1,3 +1,15 @@
+# BioJob Agent（生物工程秋招助手）
+
+这是基于 Hermes Agent 的生物工程求职专用桌面版，面向本科生的制药生产/工艺、QA/QC、细胞培养和实验技术岗位。它把岗位发现、JD 匹配、事实确认、投递跟踪、定制简历和 Excel 投递表放在同一个本地 GUI 中。
+
+- Windows 安装与使用：[中文使用指南](docs/BIOJOB_WINDOWS_GUIDE.md)
+- 设计说明：[BioJob Agent 设计文档](docs/superpowers/specs/2026-08-11-biojob-agent-design.md)
+- 安全边界：不会自动投递，不会把“收藏/准备中”误记为已投递，简历只使用你明确确认过的事实。
+
+> 本项目在 Hermes Agent（MIT License）基础上开发；下方保留上游项目说明与署名。
+
+---
+
 <p align="center">
   <img src="assets/banner.png" alt="Hermes Agent" width="100%">
 </p>

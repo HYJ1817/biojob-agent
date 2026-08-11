@@ -95,6 +95,43 @@ test('fresh bootstrap args include the packaged commit pin', () => {
   )
 })
 
+test('fresh Windows bootstrap args carry the bundled repository payload', () => {
+  const installStamp = { commit: 'a'.repeat(40), branch: 'biojob-main' }
+  const localArchive = 'C:\\Program Files\\BioJob Agent\\resources\\biojob-agent-source.zip'
+
+  assert.deepEqual(buildPinArgs(installStamp, { localArchive }), [
+    '-Branch',
+    'biojob-main',
+    '-LocalArchive',
+    localArchive
+  ])
+})
+
+test('resolveInstallScript prefers the installer bundled beside the packaged app', async () => {
+  const home = mkTmpHome()
+
+  try {
+    const bundled = path.join(home, SCRIPT_NAME)
+    fs.writeFileSync(bundled, '# bundled installer\n')
+
+    const result = await resolveInstallScript({
+      installStamp: { commit: 'a'.repeat(40), branch: 'biojob-main' },
+      sourceRepoRoot: null,
+      bundledScriptPath: bundled,
+      hermesHome: home,
+      emit: () => {},
+      _download: async () => {
+        throw new Error('network must not be used')
+      }
+    })
+
+    assert.equal(result.source, 'bundle')
+    assert.equal(result.path, bundled)
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true })
+  }
+})
+
 test('existing-checkout bootstrap args keep branch but skip the packaged commit pin', () => {
   const installStamp = { commit: 'a'.repeat(40), branch: 'main' }
 

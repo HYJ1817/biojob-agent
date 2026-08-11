@@ -35,6 +35,7 @@ data/
 test_durations.json
 .pytest-cache/
 build/biojob-qa-*/
+build/install-stage-test-*/
 tmp/
 temp_vision_images/
 hermes-*/*
