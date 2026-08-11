@@ -33,6 +33,8 @@ ApplicationStatusValue = Literal[
 FactStatusValue = Literal["pending", "confirmed", "rejected", "conflicted"]
 FactVisibilityValue = Literal["matching", "resume", "both", "private"]
 LifecycleStatusValue = Literal["open", "closed", "unknown"]
+CandidateDecisionValue = Literal["pending", "kept", "ignored", "later", "error"]
+SourceAdapterValue = Literal["manual", "public_page", "feed"]
 
 NonBlank100 = Annotated[
     str,
@@ -159,6 +161,68 @@ class JobPatch(_RequestModel):
                 raise ValueError("deleted must be true")
             if provided != {"deleted"}:
                 raise ValueError("deleted cannot be combined with other fields")
+        return self
+
+
+class CandidateImport(_RequestModel):
+    company_name: NonBlank200
+    title: NonBlank200
+    detail_url: UrlText
+    city: ShortText | None = None
+    jd_text: JobDescription | None = None
+    apply_url: UrlText | None = None
+    careers_url: UrlText | None = None
+    external_id: ShortText | None = None
+    published_at: ShortText | None = None
+    deadline_at: ShortText | None = None
+    recruitment_type: ShortText | None = None
+
+    @field_validator("detail_url", "apply_url", "careers_url", mode="before")
+    @classmethod
+    def validate_urls(cls, value: object) -> object:
+        return _validate_url(value)
+
+
+class CandidateDecisionRequest(_RequestModel):
+    decision: CandidateDecisionValue
+    note: Annotated[str, Field(max_length=10_000)] | None = None
+
+    @field_validator("note")
+    @classmethod
+    def strip_note(cls, value: str | None) -> str | None:
+        return value.strip() if value is not None else None
+
+
+class SourceCreate(_RequestModel):
+    name: NonBlank200
+    adapter_type: SourceAdapterValue
+    config: dict[str, JsonValue]
+    enabled: StrictBool = True
+    description: Annotated[str, Field(max_length=2_000)] | None = None
+
+    @field_validator("description")
+    @classmethod
+    def strip_description(cls, value: str | None) -> str | None:
+        return value.strip() if value is not None else None
+
+
+class SourcePatch(_RequestModel):
+    name: NonBlank200 | None = None
+    config: dict[str, JsonValue] | None = None
+    enabled: StrictBool | None = None
+    description: Annotated[str, Field(max_length=2_000)] | None = None
+
+    @field_validator("description")
+    @classmethod
+    def strip_description(cls, value: str | None) -> str | None:
+        return value.strip() if value is not None else None
+
+    @model_validator(mode="after")
+    def require_field(self) -> "SourcePatch":
+        if not self.model_fields_set:
+            raise ValueError("source patch must include at least one field")
+        if any(getattr(self, field) is None for field in self.model_fields_set):
+            raise ValueError("source patch fields must not be null")
         return self
 
 

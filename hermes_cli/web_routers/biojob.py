@@ -10,13 +10,24 @@ from typing import Any, Literal, TypeVar
 
 from fastapi import APIRouter, HTTPException, Query
 
-from biojob.api_models import JobCreate, JobPatch, ProfileFactCreate, ProfileFactPatch
+from biojob.api_models import (
+    CandidateDecisionRequest,
+    CandidateDecisionValue,
+    CandidateImport,
+    JobCreate,
+    JobPatch,
+    ProfileFactCreate,
+    ProfileFactPatch,
+    SourceCreate,
+    SourcePatch,
+)
 from biojob.domain import (
     ApplicationStatus,
     DomainConflictError,
     DomainDataCorruptionError,
     DomainNotFoundError,
     DomainValidationError,
+    RawJob,
 )
 from biojob.service import BioJobService
 
@@ -46,10 +57,16 @@ async def _run_service(call: Callable[[], _Result]) -> _Result:
 
 @router.get("/dashboard")
 async def dashboard() -> dict[str, dict[str, int]]:
-    counts = await _run_service(lambda: BioJobService().dashboard_counts())
-    application_counts = {status.value: 0 for status in ApplicationStatus}
-    application_counts.update(counts)
-    return {"application_counts": application_counts}
+    def read() -> dict[str, dict[str, int]]:
+        service = BioJobService()
+        application_counts = {status.value: 0 for status in ApplicationStatus}
+        application_counts.update(service.dashboard_counts())
+        return {
+            "application_counts": application_counts,
+            **service.discovery_dashboard_counts(),
+        }
+
+    return await _run_service(read)
 
 
 @router.get("/profile-facts")
@@ -75,11 +92,100 @@ async def create_profile_fact(body: ProfileFactCreate) -> dict[str, Any]:
 
 @router.patch("/profile-facts/{fact_id}")
 async def patch_profile_fact(fact_id: str, body: ProfileFactPatch) -> dict[str, Any]:
+    status = body.status
+    assert status is not None
     return await _run_service(
-        lambda: BioJobService().set_profile_fact_status(
-            fact_id, body.status, actor=_ACTOR
+        lambda: BioJobService().set_profile_fact_status(fact_id, status, actor=_ACTOR)
+    )
+
+
+@router.get("/candidates")
+async def list_candidates(
+    decision: CandidateDecisionValue = Query(default="pending"),
+    query: str | None = Query(default=None, max_length=300),
+    direction: str | None = Query(default=None, max_length=300),
+    city: str | None = Query(default=None, max_length=300),
+) -> dict[str, list[dict[str, Any]]]:
+    return {
+        "items": await _run_service(
+            lambda: BioJobService().list_candidates(
+                decision=decision,
+                query=query,
+                direction=direction,
+                city=city,
+            )
+        )
+    }
+
+
+@router.post("/candidates/import", status_code=201)
+async def import_candidate(body: CandidateImport) -> dict[str, Any]:
+    raw_job = RawJob(**body.model_dump())
+    return await _run_service(
+        lambda: BioJobService().import_candidate(raw_job, actor=_ACTOR)
+    )
+
+
+@router.get("/candidates/{job_id}")
+async def get_candidate(job_id: str) -> dict[str, Any]:
+    return await _run_service(lambda: BioJobService().get_candidate(job_id))
+
+
+@router.post("/candidates/{job_id}/decision")
+async def decide_candidate(
+    job_id: str, body: CandidateDecisionRequest
+) -> dict[str, Any]:
+    return await _run_service(
+        lambda: BioJobService().decide_candidate(
+            job_id,
+            body.decision,
+            actor=_ACTOR,
+            note=body.note,
         )
     )
+
+
+@router.get("/sources")
+async def list_sources() -> dict[str, list[dict[str, Any]]]:
+    return {
+        "items": await _run_service(lambda: BioJobService().ensure_default_sources())
+    }
+
+
+@router.post("/sources", status_code=201)
+async def create_source(body: SourceCreate) -> dict[str, Any]:
+    return await _run_service(
+        lambda: BioJobService().create_source(actor=_ACTOR, **body.model_dump())
+    )
+
+
+@router.patch("/sources/{source_id}")
+async def patch_source(source_id: str, body: SourcePatch) -> dict[str, Any]:
+    return await _run_service(
+        lambda: BioJobService().update_source(
+            source_id,
+            actor=_ACTOR,
+            **body.model_dump(exclude_unset=True),
+        )
+    )
+
+
+@router.post("/sources/{source_id}/run")
+async def run_source(source_id: str) -> dict[str, Any]:
+    return await _run_service(
+        lambda: BioJobService().run_source(source_id, actor=_ACTOR)
+    )
+
+
+@router.get("/source-runs")
+async def list_source_runs(
+    source_id: str | None = Query(default=None),
+) -> dict[str, list[dict[str, Any]]]:
+    return {
+        "items": await _run_service(
+            lambda: BioJobService().list_source_runs(source_id=source_id)
+        )
+    }
 
 
 @router.get("/jobs")

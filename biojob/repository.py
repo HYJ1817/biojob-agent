@@ -513,6 +513,35 @@ class BioJobRepository:
             parameters.append(city)
         return self._candidate_rows(conditions, parameters)
 
+    def candidate_counts(self) -> list[sqlite3.Row]:
+        return self.connection.execute(
+            "WITH ranked AS ("
+            "SELECT candidate_decisions.job_id, candidate_decisions.decision, "
+            "ROW_NUMBER() OVER (PARTITION BY candidate_decisions.job_id "
+            "ORDER BY candidate_decisions.created_at DESC, "
+            "candidate_decisions.rowid DESC) AS rank "
+            "FROM candidate_decisions) "
+            "SELECT ranked.decision, COUNT(*) AS count FROM ranked "
+            "JOIN jobs ON jobs.id = ranked.job_id "
+            "WHERE ranked.rank = 1 AND jobs.deleted_at IS NULL "
+            "GROUP BY ranked.decision"
+        ).fetchall()
+
+    def source_counts(self) -> sqlite3.Row:
+        row = self.connection.execute(
+            "SELECT COUNT(*) AS total, "
+            "COALESCE(SUM(CASE WHEN enabled = 1 THEN 1 ELSE 0 END), 0) AS enabled, "
+            "COALESCE(SUM(CASE WHEN health_status = 'healthy' THEN 1 ELSE 0 END), 0) "
+            "AS healthy, "
+            "COALESCE(SUM(CASE WHEN health_status = 'degraded' THEN 1 ELSE 0 END), 0) "
+            "AS degraded, "
+            "COALESCE(SUM(CASE WHEN health_status = 'failed' THEN 1 ELSE 0 END), 0) "
+            "AS failed FROM sources"
+        ).fetchone()
+        if row is None:
+            raise RuntimeError("source counts could not be read")
+        return row
+
     def _candidate_rows(
         self, conditions: list[str], parameters: list[str]
     ) -> list[sqlite3.Row]:

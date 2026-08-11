@@ -355,6 +355,77 @@ class BioJobService:
         finally:
             connection.close()
 
+    def import_candidate(self, raw_job: RawJob, *, actor: str) -> dict[str, Any]:
+        actor = _require_nonempty_string("actor", actor)
+        source_name = "手工导入"
+        source_id = "manual-import"
+        connection = self.database.connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            repository = BioJobRepository(connection)
+            row = repository.get_source_by_name(source_name)
+            if row is None:
+                conflicting_id = repository.get_source(source_id)
+                if conflicting_id is not None:
+                    raise DomainConflictError(
+                        "manual import source identifier is already in use"
+                    )
+                created_at = _utc_now()
+                repository.insert_source(
+                    source_id=source_id,
+                    name=source_name,
+                    adapter_type="manual",
+                    enabled=True,
+                    config_json="{}",
+                    description="用户手工导入的岗位，不执行网络请求。",
+                    created_at=created_at,
+                )
+                self._insert_audit(
+                    repository,
+                    action="source.default_created",
+                    entity_id=source_id,
+                    entity_type="source",
+                    actor=actor,
+                    metadata={"name": source_name},
+                    created_at=created_at,
+                )
+            else:
+                source = _source_dict(row)
+                source_id = source["id"]
+                if source["adapter_type"] != "manual":
+                    raise DomainConflictError(
+                        "manual import source name belongs to another adapter"
+                    )
+            connection.execute("COMMIT")
+        except Exception:
+            _rollback(connection)
+            raise
+        finally:
+            connection.close()
+        return self.ingest_candidate(raw_job, source_id=source_id, actor=actor)
+
+    def discovery_dashboard_counts(self) -> dict[str, dict[str, int]]:
+        connection = self.database.connect()
+        try:
+            repository = BioJobRepository(connection)
+            candidate_counts = {decision.value: 0 for decision in CandidateDecision}
+            for row in repository.candidate_counts():
+                decision = _parse_persisted_candidate_decision(
+                    row["decision"], "dashboard"
+                )
+                candidate_counts[decision] = row["count"]
+            source_row = repository.source_counts()
+            source_counts = {
+                key: source_row[key]
+                for key in ("total", "enabled", "healthy", "degraded", "failed")
+            }
+            return {
+                "candidate_counts": candidate_counts,
+                "source_counts": source_counts,
+            }
+        finally:
+            connection.close()
+
     def ingest_candidate(
         self,
         raw_job: RawJob,
