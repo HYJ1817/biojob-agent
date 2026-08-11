@@ -52,6 +52,11 @@ class BioJobRepository:
             (fact_id,),
         ).fetchone()
 
+    def list_profile_facts(self) -> list[sqlite3.Row]:
+        return self.connection.execute(
+            "SELECT * FROM profile_facts ORDER BY created_at, rowid"
+        ).fetchall()
+
     def update_profile_fact_status(
         self,
         *,

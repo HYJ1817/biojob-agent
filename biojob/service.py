@@ -641,6 +641,14 @@ class BioJobService:
         finally:
             connection.close()
 
+    def list_profile_facts(self) -> list[dict[str, Any]]:
+        connection = self.database.connect()
+        try:
+            rows = BioJobRepository(connection).list_profile_facts()
+            return [_profile_fact_dict(row) for row in rows]
+        finally:
+            connection.close()
+
     def list_audit_log(
         self,
         *,
