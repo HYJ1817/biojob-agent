@@ -511,7 +511,7 @@ Create a temporary database, query `pragma_table_info` for every table, and fail
 
 Append exact commands and counts under a `Phase 1 data core` section. Preserve the existing upstream-test exceptions and do not change their status to passing.
 
-- [ ] **Step 5: Final repository verification and commit**
+- [x] **Step 5: Final repository verification and commit**
 
 Run `git diff --check`, verify the pinned Hermes commit remains an ancestor, ensure no database or credentials are tracked, then commit as `docs: record BioJob data core verification` and push `biojob-main`.
 
