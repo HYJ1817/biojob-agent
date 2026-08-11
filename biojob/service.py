@@ -11,6 +11,7 @@ from uuid import uuid4
 from biojob.database import BioJobDatabase
 from biojob.domain import (
     DomainConflictError,
+    DomainDataCorruptionError,
     DomainNotFoundError,
     DomainValidationError,
     FactVisibility,
@@ -41,8 +42,7 @@ class BioJobService:
         fact_key = _require_nonempty_string("fact_key", fact_key)
         source_type = _require_nonempty_string("source_type", source_type)
         actor = _require_nonempty_string("actor", actor)
-        if source_ref is not None and not isinstance(source_ref, str):
-            raise DomainValidationError("source_ref must be a string or None")
+        source_ref = _normalize_optional_string("source_ref", source_ref)
         visibility_value = _parse_visibility(visibility)
         value_json = _serialize_json("value", value)
 
@@ -108,10 +108,6 @@ class BioJobService:
         fact_id = _require_nonempty_string("fact_id", fact_id)
         actor = _require_nonempty_string("actor", actor)
         status_value = _parse_status(status)
-        updated_at = _utc_now()
-        confirmed_at = (
-            updated_at if status_value == ProfileFactStatus.CONFIRMED.value else None
-        )
 
         connection = self.database.connect()
         try:
@@ -120,6 +116,13 @@ class BioJobService:
             previous = repository.get_profile_fact(fact_id)
             if previous is None:
                 raise DomainNotFoundError(f"profile fact not found: {fact_id}")
+            _profile_fact_dict(previous)
+            updated_at = _utc_now()
+            confirmed_at = (
+                updated_at
+                if status_value == ProfileFactStatus.CONFIRMED.value
+                else None
+            )
             repository.update_profile_fact_status(
                 fact_id=fact_id,
                 status=status_value,
@@ -138,6 +141,9 @@ class BioJobService:
                 created_at=updated_at,
             )
             row = repository.get_profile_fact(fact_id)
+            if row is None:
+                raise RuntimeError("updated profile fact could not be read back")
+            result = _profile_fact_dict(row)
             connection.execute("COMMIT")
         except Exception:
             _rollback(connection)
@@ -145,16 +151,15 @@ class BioJobService:
         finally:
             connection.close()
 
-        if row is None:
-            raise RuntimeError("updated profile fact could not be read back")
-        return _profile_fact_dict(row)
+        return result
 
     def list_usable_facts(self, purpose: str) -> list[dict[str, Any]]:
+        purpose = _require_nonempty_string("purpose", purpose)
         visibility_by_purpose = {
             "resume": FactVisibility.RESUME.value,
             "matching": FactVisibility.MATCHING.value,
         }
-        if not isinstance(purpose, str) or purpose not in visibility_by_purpose:
+        if purpose not in visibility_by_purpose:
             raise DomainValidationError("purpose must be 'resume' or 'matching'")
         visibility = visibility_by_purpose[purpose]
 
@@ -207,11 +212,19 @@ class BioJobService:
 def _require_nonempty_string(name: str, value: Any) -> str:
     if not isinstance(value, str) or not value.strip():
         raise DomainValidationError(f"{name} must be a non-empty string")
-    return value
+    return value.strip()
+
+
+def _normalize_optional_string(name: str, value: Any) -> str | None:
+    if value is None:
+        return None
+    return _require_nonempty_string(name, value)
 
 
 def _parse_visibility(value: Any) -> str:
     try:
+        if isinstance(value, str):
+            value = value.strip()
         return FactVisibility(value).value
     except (TypeError, ValueError) as exc:
         raise DomainValidationError(
@@ -221,6 +234,8 @@ def _parse_visibility(value: Any) -> str:
 
 def _parse_status(value: Any) -> str:
     try:
+        if isinstance(value, str):
+            value = value.strip()
         return ProfileFactStatus(value).value
     except (TypeError, ValueError) as exc:
         raise DomainValidationError(
@@ -264,11 +279,36 @@ def _is_duplicate_profile_fact(exc: sqlite3.IntegrityError) -> bool:
 
 def _profile_fact_dict(row: sqlite3.Row) -> dict[str, Any]:
     result = dict(row)
-    result["value"] = json.loads(result.pop("value_json"))
+    result["value"] = _decode_json_field(
+        result.pop("value_json"),
+        entity_type="profile fact",
+        entity_id=result["id"],
+        field="value_json",
+    )
     return result
 
 
 def _audit_dict(row: sqlite3.Row) -> dict[str, Any]:
     result = dict(row)
-    result["metadata"] = json.loads(result.pop("metadata_json"))
+    result["metadata"] = _decode_json_field(
+        result.pop("metadata_json"),
+        entity_type="audit log",
+        entity_id=result["id"],
+        field="metadata_json",
+    )
     return result
+
+
+def _decode_json_field(
+    raw_value: Any,
+    *,
+    entity_type: str,
+    entity_id: str,
+    field: str,
+) -> Any:
+    try:
+        return json.loads(raw_value)
+    except (TypeError, json.JSONDecodeError):
+        raise DomainDataCorruptionError(
+            f"corrupt {entity_type} {entity_id}: {field} is not valid JSON"
+        ) from None

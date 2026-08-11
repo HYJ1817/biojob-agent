@@ -110,10 +110,10 @@ class BioJobRepository:
     def list_audit_log(self, entity_id: str | None = None) -> list[sqlite3.Row]:
         if entity_id is None:
             return self.connection.execute(
-                "SELECT * FROM audit_log ORDER BY created_at, rowid"
+                "SELECT * FROM audit_log ORDER BY created_at, id"
             ).fetchall()
         return self.connection.execute(
             "SELECT * FROM audit_log "
-            "WHERE entity_id = ? ORDER BY created_at, rowid",
+            "WHERE entity_id = ? ORDER BY created_at, id",
             (entity_id,),
         ).fetchall()

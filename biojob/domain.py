@@ -29,5 +29,9 @@ class DomainConflictError(ValueError):
     """Raised when a domain uniqueness or state invariant conflicts."""
 
 
+class DomainDataCorruptionError(RuntimeError):
+    """Raised when persisted domain data cannot be decoded safely."""
+
+
 class DomainNotFoundError(LookupError):
     """Raised when a requested domain entity does not exist."""

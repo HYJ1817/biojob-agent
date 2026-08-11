@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 from contextlib import closing
+import threading
 
 import pytest
 
+import biojob.service as service_module
 from biojob.database import BioJobDatabase
 from biojob.domain import (
     DomainConflictError,
+    DomainDataCorruptionError,
     DomainNotFoundError,
     DomainValidationError,
 )
@@ -236,3 +239,215 @@ def test_audit_log_has_stable_chronological_order(service):
     assert [entry["created_at"] for entry in audit] == sorted(
         entry["created_at"] for entry in audit
     )
+
+
+def test_status_timestamp_is_generated_after_write_lock(database, monkeypatch):
+    service = BioJobService(database)
+    fact = create_fact(service)
+    older_connect_entered = threading.Event()
+    release_older_connect = threading.Event()
+    holder_has_lock = threading.Event()
+    release_holder = threading.Event()
+    older_begin_attempted = threading.Event()
+    clock_lock = threading.Lock()
+    timestamps = iter(
+        [
+            "2099-01-01T00:00:01+00:00",
+            "2099-01-01T00:00:02+00:00",
+        ]
+    )
+    real_connect = database.connect
+    real_get = BioJobRepository.get_profile_fact
+    results = {}
+    errors = {}
+
+    class SignalingConnection:
+        def __init__(self, delegate):
+            self._delegate = delegate
+
+        def execute(self, sql, *args):
+            if sql.strip().upper() == "BEGIN IMMEDIATE":
+                older_begin_attempted.set()
+            return self._delegate.execute(sql, *args)
+
+        def __getattr__(self, name):
+            return getattr(self._delegate, name)
+
+    def controlled_connect():
+        connection = real_connect()
+        if threading.current_thread().name != "older-blocked":
+            return connection
+        older_connect_entered.set()
+        if not release_older_connect.wait(timeout=5):
+            connection.close()
+            raise TimeoutError("older writer was not released")
+        return SignalingConnection(connection)
+
+    def controlled_get(repository, fact_id):
+        row = real_get(repository, fact_id)
+        if threading.current_thread().name == "newer-lock-holder":
+            holder_has_lock.set()
+            if not release_holder.wait(timeout=5):
+                raise TimeoutError("lock holder was not released")
+        return row
+
+    def controlled_now():
+        with clock_lock:
+            return next(timestamps)
+
+    def change_status(label, status):
+        try:
+            results[label] = service.set_profile_fact_status(
+                fact["id"], status, actor=label
+            )
+        except Exception as exc:
+            errors[label] = exc
+
+    monkeypatch.setattr(database, "connect", controlled_connect)
+    monkeypatch.setattr(BioJobRepository, "get_profile_fact", controlled_get)
+    monkeypatch.setattr(service_module, "_utc_now", controlled_now)
+
+    older = threading.Thread(
+        target=change_status,
+        args=("older", "conflicted"),
+        name="older-blocked",
+    )
+    holder = threading.Thread(
+        target=change_status,
+        args=("newer", "confirmed"),
+        name="newer-lock-holder",
+    )
+    try:
+        older.start()
+        assert older_connect_entered.wait(timeout=5)
+        holder.start()
+        assert holder_has_lock.wait(timeout=5)
+        release_older_connect.set()
+        assert older_begin_attempted.wait(timeout=5)
+        release_holder.set()
+        holder.join(timeout=5)
+        older.join(timeout=5)
+    finally:
+        release_older_connect.set()
+        release_holder.set()
+        if holder.ident is not None:
+            holder.join(timeout=5)
+        if older.ident is not None:
+            older.join(timeout=5)
+
+    assert not holder.is_alive()
+    assert not older.is_alive()
+    assert errors == {}
+    audit = service.list_audit_log(entity_id=fact["id"])
+    previous_status = "pending"
+    for entry in audit[1:]:
+        assert entry["metadata"]["old_status"] == previous_status
+        previous_status = entry["metadata"]["new_status"]
+    assert previous_status == "conflicted"
+    assert results["older"]["updated_at"] == audit[-1]["created_at"]
+
+
+def test_profile_fact_text_fields_are_stripped_before_storage_and_uniqueness(service):
+    fact = service.create_profile_fact(
+        category=" laboratory ",
+        fact_key=" cck8 ",
+        value={"skill": " keep surrounding value spaces "},
+        source_type=" user ",
+        source_ref=" resume:1 ",
+        visibility=" both ",
+        actor=" creator ",
+    )
+
+    assert fact["category"] == "laboratory"
+    assert fact["fact_key"] == "cck8"
+    assert fact["source_type"] == "user"
+    assert fact["source_ref"] == "resume:1"
+    assert fact["value"] == {"skill": " keep surrounding value spaces "}
+    audit = service.list_audit_log(entity_id=fact["id"])
+    assert audit[0]["actor"] == "creator"
+    assert audit[0]["metadata"]["category"] == "laboratory"
+    assert audit[0]["metadata"]["fact_key"] == "cck8"
+
+    with pytest.raises(DomainConflictError):
+        create_fact(service)
+
+
+def test_status_visibility_and_purpose_use_consistent_stripping(service):
+    fact = service.create_profile_fact(
+        category="laboratory",
+        fact_key="cck8",
+        value={"skill": "CCK-8"},
+        source_type="user",
+        visibility=" both ",
+        actor=" creator ",
+    )
+
+    service.set_profile_fact_status(fact["id"], " confirmed ", actor=" reviewer ")
+
+    assert service.list_usable_facts(" resume ")[0]["id"] == fact["id"]
+    assert service.list_audit_log(entity_id=fact["id"])[-1]["actor"] == "reviewer"
+
+
+def test_audit_log_orders_equal_timestamps_by_id(database, service):
+    fact = create_fact(service)
+    with closing(database.connect()) as connection:
+        for audit_id in ("audit-z", "audit-a"):
+            connection.execute(
+                "INSERT INTO audit_log "
+                "(id, action, entity_type, entity_id, actor, metadata_json, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    audit_id,
+                    "profile_fact.probe",
+                    "profile_fact",
+                    fact["id"],
+                    "tester",
+                    "{}",
+                    "2099-01-01T00:00:00+00:00",
+                ),
+            )
+
+    audit = service.list_audit_log(entity_id=fact["id"])
+
+    assert [entry["id"] for entry in audit[-2:]] == ["audit-a", "audit-z"]
+
+
+def test_corrupt_value_rolls_back_status_and_audit(database, service):
+    fact = create_fact(service)
+    with closing(database.connect()) as connection:
+        connection.execute(
+            "UPDATE profile_facts SET value_json = ? WHERE id = ?",
+            ("{not-json", fact["id"]),
+        )
+    audit_count = len(service.list_audit_log(entity_id=fact["id"]))
+
+    with pytest.raises(DomainDataCorruptionError, match=fact["id"]):
+        service.set_profile_fact_status(fact["id"], "confirmed", actor="reviewer")
+
+    with closing(database.connect()) as connection:
+        stored = connection.execute(
+            "SELECT status, confirmed_at FROM profile_facts WHERE id = ?",
+            (fact["id"],),
+        ).fetchone()
+        stored_audit_count = connection.execute(
+            "SELECT COUNT(*) FROM audit_log WHERE entity_id = ?",
+            (fact["id"],),
+        ).fetchone()[0]
+    assert tuple(stored) == ("pending", None)
+    assert stored_audit_count == audit_count
+
+
+def test_usable_fact_list_reports_corrupt_entity_and_field(database, service):
+    fact = create_fact(service)
+    service.set_profile_fact_status(fact["id"], "confirmed", actor="reviewer")
+    with closing(database.connect()) as connection:
+        connection.execute(
+            "UPDATE profile_facts SET value_json = ? WHERE id = ?",
+            ("{not-json", fact["id"]),
+        )
+
+    with pytest.raises(DomainDataCorruptionError) as exc_info:
+        service.list_usable_facts("resume")
+
+    assert fact["id"] in str(exc_info.value)
+    assert "value_json" in str(exc_info.value)
