@@ -116,14 +116,13 @@ async def patch_job(job_id: str, body: JobPatch) -> dict[str, Any]:
 
 @router.post("/jobs/{job_id}/prepare-application")
 async def prepare_application(job_id: str) -> dict[str, Any]:
-    def prepare() -> dict[str, Any]:
-        service = BioJobService()
-        service.transition_application(
-            job_id, ApplicationStatus.PREPARING, actor=_ACTOR
+    return await _run_service(
+        lambda: BioJobService().update_job(
+            job_id,
+            actor=_ACTOR,
+            application_status=ApplicationStatus.PREPARING,
         )
-        return service.get_job(job_id)
-
-    return await _run_service(prepare)
+    )
 
 
 @router.get("/jobs/{job_id}/events")

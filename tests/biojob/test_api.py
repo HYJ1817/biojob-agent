@@ -8,6 +8,8 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from biojob.domain import ApplicationStatus, DomainDataCorruptionError
+from biojob.repository import BioJobRepository
+from biojob.service import BioJobService
 from hermes_cli.dashboard_auth.public_paths import PUBLIC_API_PATHS
 from hermes_cli.web_routers import biojob as biojob_routes
 
@@ -144,6 +146,63 @@ def test_duplicate_fact_and_invalid_prepare_are_conflicts(client):
     )
     repeated = client.post(f"/api/biojob/jobs/{job['id']}/prepare-application")
     assert repeated.status_code == 409
+
+
+def test_prepare_application_uses_atomic_job_update_boundary(client, monkeypatch):
+    expected = {
+        "id": "job-1",
+        "application": {"status": "preparing"},
+    }
+    calls = []
+
+    class RecordingService:
+        def update_job(self, job_id, *, actor, **changes):
+            calls.append((job_id, actor, changes))
+            return expected
+
+    monkeypatch.setattr(biojob_routes, "BioJobService", RecordingService)
+
+    response = client.post("/api/biojob/jobs/job-1/prepare-application")
+
+    assert response.status_code == 200, response.text
+    assert response.json() == expected
+    assert calls == [
+        (
+            "job-1",
+            "biojob-api",
+            {"application_status": ApplicationStatus.PREPARING},
+        )
+    ]
+
+
+def test_prepare_readback_failure_rolls_back_entire_transaction(client, monkeypatch):
+    job = _create_job(client)
+    before_events = client.get(f"/api/biojob/jobs/{job['id']}/events").json()
+    before_dashboard = client.get("/api/biojob/dashboard").json()
+    before_audit = BioJobService().list_audit_log()
+    real_get_job = BioJobRepository.get_job
+    read_count = 0
+
+    def fail_transaction_readback(repository, job_id):
+        nonlocal read_count
+        read_count += 1
+        row = real_get_job(repository, job_id)
+        if read_count == 2:
+            return None
+        return row
+
+    with monkeypatch.context() as patch:
+        patch.setattr(BioJobRepository, "get_job", fail_transaction_readback)
+        response = client.post(f"/api/biojob/jobs/{job['id']}/prepare-application")
+
+    assert response.status_code == 500
+    assert response.json() == {"detail": "BioJob operation failed"}
+    assert read_count == 2
+    stored = client.get(f"/api/biojob/jobs/{job['id']}").json()
+    assert stored["application"]["status"] == "considering"
+    assert client.get(f"/api/biojob/jobs/{job['id']}/events").json() == before_events
+    assert client.get("/api/biojob/dashboard").json() == before_dashboard
+    assert BioJobService().list_audit_log() == before_audit
 
 
 def test_patch_job_fields_and_legal_application_chain(client):
