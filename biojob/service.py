@@ -281,7 +281,7 @@ def _profile_fact_dict(row: sqlite3.Row) -> dict[str, Any]:
     result = dict(row)
     result["value"] = _decode_json_field(
         result.pop("value_json"),
-        entity_type="profile fact",
+        table="profile_facts",
         entity_id=result["id"],
         field="value_json",
     )
@@ -292,7 +292,7 @@ def _audit_dict(row: sqlite3.Row) -> dict[str, Any]:
     result = dict(row)
     result["metadata"] = _decode_json_field(
         result.pop("metadata_json"),
-        entity_type="audit log",
+        table="audit_log",
         entity_id=result["id"],
         field="metadata_json",
     )
@@ -302,13 +302,20 @@ def _audit_dict(row: sqlite3.Row) -> dict[str, Any]:
 def _decode_json_field(
     raw_value: Any,
     *,
-    entity_type: str,
+    table: str,
     entity_id: str,
     field: str,
 ) -> Any:
     try:
-        return json.loads(raw_value)
-    except (TypeError, json.JSONDecodeError):
+        return json.loads(
+            raw_value,
+            parse_constant=_reject_non_finite_json_constant,
+        )
+    except (UnicodeDecodeError, TypeError, ValueError):
         raise DomainDataCorruptionError(
-            f"corrupt {entity_type} {entity_id}: {field} is not valid JSON"
+            f"corrupt {table} entity {entity_id}: {field} is not valid strict JSON"
         ) from None
+
+
+def _reject_non_finite_json_constant(constant: str) -> None:
+    raise ValueError(f"non-finite JSON constant: {constant}")

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from contextlib import closing
+import json
+import sqlite3
 import threading
 
 import pytest
@@ -388,10 +390,23 @@ def test_status_visibility_and_purpose_use_consistent_stripping(service):
     assert service.list_audit_log(entity_id=fact["id"])[-1]["actor"] == "reviewer"
 
 
-def test_audit_log_orders_equal_timestamps_by_id(database, service):
+def test_audit_log_preserves_inserted_causality_for_equal_timestamps(
+    database,
+    service,
+):
     fact = create_fact(service)
+    inserted_events = (
+        (
+            "ffffffff-ffff-4fff-8fff-ffffffffffff",
+            {"old_status": "pending", "new_status": "confirmed"},
+        ),
+        (
+            "00000000-0000-4000-8000-000000000000",
+            {"old_status": "confirmed", "new_status": "rejected"},
+        ),
+    )
     with closing(database.connect()) as connection:
-        for audit_id in ("audit-z", "audit-a"):
+        for audit_id, metadata in inserted_events:
             connection.execute(
                 "INSERT INTO audit_log "
                 "(id, action, entity_type, entity_id, actor, metadata_json, created_at) "
@@ -402,28 +417,53 @@ def test_audit_log_orders_equal_timestamps_by_id(database, service):
                     "profile_fact",
                     fact["id"],
                     "tester",
-                    "{}",
+                    json.dumps(metadata),
                     "2099-01-01T00:00:00+00:00",
                 ),
             )
 
     audit = service.list_audit_log(entity_id=fact["id"])
 
-    assert [entry["id"] for entry in audit[-2:]] == ["audit-a", "audit-z"]
+    assert [entry["id"] for entry in audit[-2:]] == [
+        audit_id for audit_id, _ in inserted_events
+    ]
+    previous_status = "pending"
+    for entry in audit[-2:]:
+        assert entry["metadata"]["old_status"] == previous_status
+        previous_status = entry["metadata"]["new_status"]
+        assert "rowid" not in entry
+    assert previous_status == "rejected"
 
 
-def test_corrupt_value_rolls_back_status_and_audit(database, service):
+@pytest.mark.parametrize(
+    "corrupt_json",
+    [
+        pytest.param(sqlite3.Binary(b"\xff"), id="invalid-utf8-blob"),
+        pytest.param("NaN", id="nan"),
+        pytest.param("Infinity", id="positive-infinity"),
+        pytest.param("-Infinity", id="negative-infinity"),
+    ],
+)
+def test_corrupt_value_rolls_back_status_and_audit(
+    database,
+    service,
+    corrupt_json,
+):
     fact = create_fact(service)
     with closing(database.connect()) as connection:
         connection.execute(
             "UPDATE profile_facts SET value_json = ? WHERE id = ?",
-            ("{not-json", fact["id"]),
+            (corrupt_json, fact["id"]),
         )
     audit_count = len(service.list_audit_log(entity_id=fact["id"]))
 
-    with pytest.raises(DomainDataCorruptionError, match=fact["id"]):
+    with pytest.raises(DomainDataCorruptionError) as exc_info:
         service.set_profile_fact_status(fact["id"], "confirmed", actor="reviewer")
 
+    assert "profile_facts" in str(exc_info.value)
+    assert fact["id"] in str(exc_info.value)
+    assert "value_json" in str(exc_info.value)
+    assert exc_info.value.__cause__ is None
     with closing(database.connect()) as connection:
         stored = connection.execute(
             "SELECT status, confirmed_at FROM profile_facts WHERE id = ?",
@@ -450,4 +490,36 @@ def test_usable_fact_list_reports_corrupt_entity_and_field(database, service):
         service.list_usable_facts("resume")
 
     assert fact["id"] in str(exc_info.value)
+    assert "profile_facts" in str(exc_info.value)
     assert "value_json" in str(exc_info.value)
+
+
+@pytest.mark.parametrize(
+    "corrupt_json",
+    [
+        pytest.param(sqlite3.Binary(b"\xff"), id="invalid-utf8-blob"),
+        pytest.param("NaN", id="nan"),
+        pytest.param("Infinity", id="positive-infinity"),
+        pytest.param("-Infinity", id="negative-infinity"),
+    ],
+)
+def test_audit_list_reports_strict_json_corruption(
+    database,
+    service,
+    corrupt_json,
+):
+    fact = create_fact(service)
+    audit_id = service.list_audit_log(entity_id=fact["id"])[0]["id"]
+    with closing(database.connect()) as connection:
+        connection.execute(
+            "UPDATE audit_log SET metadata_json = ? WHERE id = ?",
+            (corrupt_json, audit_id),
+        )
+
+    with pytest.raises(DomainDataCorruptionError) as exc_info:
+        service.list_audit_log(entity_id=fact["id"])
+
+    assert "audit_log" in str(exc_info.value)
+    assert audit_id in str(exc_info.value)
+    assert "metadata_json" in str(exc_info.value)
+    assert exc_info.value.__cause__ is None
