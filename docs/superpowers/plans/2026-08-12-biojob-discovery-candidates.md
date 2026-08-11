@@ -304,7 +304,7 @@ Against a temporary `HERMES_HOME`, run each enabled default public landing sourc
 
 Append a `Phase 2 discovery and candidates` section with exact commands, test counts, source smoke results, and the explicit no-auto-apply boundary. Mark completed checklist items.
 
-- [ ] **Step 4: Commit and push**
+- [x] **Step 4: Commit and push**
 
 Verify the pinned Hermes commit remains an ancestor, no `.db`/credentials are tracked, and the worktree is clean after committing as `docs: record BioJob discovery verification`. Push `biojob-main`.
 
