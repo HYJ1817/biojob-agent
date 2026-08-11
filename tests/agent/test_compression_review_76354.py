@@ -408,14 +408,16 @@ class TestF6ExecutorSaturation:
         not run and the transcript must come back unchanged.
         """
         import os
+        from contextlib import closing
         from pathlib import Path
         from unittest.mock import MagicMock, patch
         import tempfile
 
         from hermes_state import SessionDB
 
-        with tempfile.TemporaryDirectory() as td:
-            db = SessionDB(db_path=Path(td) / "state.db")
+        with tempfile.TemporaryDirectory() as td, closing(
+            SessionDB(db_path=Path(td) / "state.db")
+        ) as db:
             session_id = "F6_PRESTART_FENCE"
             db.create_session(session_id, source="cli")
             with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
