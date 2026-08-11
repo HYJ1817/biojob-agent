@@ -405,10 +405,10 @@ class BioJobRepository:
 
     def dashboard_counts(self) -> list[sqlite3.Row]:
         return self.connection.execute(
-            "SELECT applications.status, COUNT(*) AS count FROM applications "
+            "SELECT applications.id, applications.status FROM applications "
             "JOIN jobs ON jobs.id = applications.job_id "
-            "WHERE jobs.deleted_at IS NULL GROUP BY applications.status "
-            "ORDER BY applications.status"
+            "WHERE jobs.deleted_at IS NULL "
+            "ORDER BY applications.status, applications.id"
         ).fetchall()
 
 

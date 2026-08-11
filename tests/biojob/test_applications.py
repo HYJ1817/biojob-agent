@@ -11,6 +11,7 @@ from biojob.database import BioJobDatabase
 from biojob.domain import (
     ApplicationStatus,
     DomainConflictError,
+    DomainDataCorruptionError,
     DomainNotFoundError,
     DomainValidationError,
 )
@@ -259,6 +260,29 @@ def test_create_job_rejects_unsafe_or_hostless_urls(service, url):
         create_job(service, detail_url=url)
 
 
+@pytest.mark.parametrize(
+    "url",
+    [
+        "\x00https://example.test/jobs/1",
+        "https://example.test/jobs/1\r\nX-Injected: yes",
+        "https://user@example.test/jobs/1",
+        "https://user:secret@example.test/jobs/1",
+        "https://example.test/jobs/\x7fhidden",
+    ],
+)
+def test_create_job_rejects_control_characters_and_userinfo_without_writes(
+    database,
+    service,
+    url,
+):
+    with pytest.raises(DomainValidationError):
+        create_job(service, detail_url=url)
+
+    with closing(database.connect()) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM jobs").fetchone()[0] == 0
+        assert connection.execute("SELECT COUNT(*) FROM audit_log").fetchone()[0] == 0
+
+
 def test_blank_optional_url_is_stored_as_none(service):
     job = create_job(service, detail_url="  ", apply_url=None, careers_url="")
 
@@ -268,10 +292,18 @@ def test_blank_optional_url_is_stored_as_none(service):
     assert job["links"] == {"detail": None, "apply": None, "careers": None}
 
 
-@pytest.mark.parametrize("status", ["opening", "", None, 3])
+@pytest.mark.parametrize("status", ["opening", "", None, 3, [], {}])
 def test_create_job_rejects_invalid_lifecycle_status(service, status):
     with pytest.raises(DomainValidationError):
         create_job(service, lifecycle_status=status)
+
+
+@pytest.mark.parametrize("status", [[], {}])
+def test_update_job_rejects_non_string_lifecycle_status(service, status):
+    job = create_job(service)
+
+    with pytest.raises(DomainValidationError):
+        service.update_job(job["id"], actor="user", lifecycle_status=status)
 
 
 def test_create_job_rolls_back_company_job_application_event_and_audit_on_failure(
@@ -363,7 +395,7 @@ def test_update_job_uses_whitelist_updates_application_fields_and_audits(service
     assert updated["notes"] == "联系人：张老师\n周五跟进"
     assert updated["city"] == "上海"
     assert updated["lifecycle_status"] == "closed"
-    assert updated["application"]["next_follow_up_at"] == ("2026-08-14T09:00:00+08:00")
+    assert updated["application"]["next_follow_up_at"] == "2026-08-14T01:00:00Z"
     assert updated["company"]["canonical_name"] == updated["company_name"]
     assert updated["links"] == {
         "detail": "https://example.test/jobs/1",
@@ -403,6 +435,107 @@ def test_update_job_routes_application_status_through_transition_rules(service):
     assert [
         event["new_status"] for event in service.list_application_events(job["id"])
     ] == ["considering", "preparing"]
+
+
+def test_update_job_combines_fields_and_status_in_one_transaction(service):
+    job = create_job(service)
+
+    updated = service.update_job(
+        job["id"],
+        actor="user",
+        status="preparing",
+        notes="prepare materials",
+        next_follow_up_at="2026-08-14T09:00:00+08:00",
+    )
+
+    assert updated["notes"] == "prepare materials"
+    assert updated["application"]["status"] == "preparing"
+    assert updated["application"]["next_follow_up_at"] == "2026-08-14T01:00:00Z"
+    assert [
+        event["new_status"] for event in service.list_application_events(job["id"])
+    ] == ["considering", "preparing"]
+
+
+def test_update_status_readback_is_inside_the_write_transaction(
+    database,
+    monkeypatch,
+):
+    service = BioJobService(database)
+    job = create_job(service)
+    readback_started = threading.Event()
+    deleter_started = threading.Event()
+    deletion_finished = threading.Event()
+    calls_lock = threading.Lock()
+    updater_thread_id = None
+    updater_get_calls = 0
+    real_repository_get = BioJobRepository.get_job
+    real_service_get = service.get_job
+
+    def controlled_repository_get(repository, job_id):
+        nonlocal updater_get_calls
+        row = real_repository_get(repository, job_id)
+        if threading.get_ident() == updater_thread_id:
+            with calls_lock:
+                updater_get_calls += 1
+                call_number = updater_get_calls
+            if call_number == 2:
+                readback_started.set()
+                assert deleter_started.wait(timeout=5)
+        return row
+
+    def post_commit_get(job_id):
+        assert deletion_finished.wait(timeout=5)
+        return real_service_get(job_id)
+
+    monkeypatch.setattr(BioJobRepository, "get_job", controlled_repository_get)
+    monkeypatch.setattr(service, "get_job", post_commit_get)
+
+    def update():
+        nonlocal updater_thread_id
+        updater_thread_id = threading.get_ident()
+        return service.update_job(job["id"], actor="user", status="preparing")
+
+    def delete():
+        deleter_started.set()
+        try:
+            service.soft_delete_job(job["id"], actor="deleter")
+        finally:
+            deletion_finished.set()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        update_future = executor.submit(update)
+        assert readback_started.wait(timeout=5)
+        delete_future = executor.submit(delete)
+        updated = update_future.result(timeout=5)
+        delete_future.result(timeout=5)
+
+    assert updated["application"]["status"] == "preparing"
+
+
+@pytest.mark.parametrize(
+    "invalid_value",
+    ["2026-08-14T09:00:00", "2026-02-30T09:00:00Z", 3, []],
+)
+def test_next_follow_up_requires_valid_timezone_aware_iso_datetime(
+    service,
+    invalid_value,
+):
+    job = create_job(service)
+
+    with pytest.raises(DomainValidationError):
+        service.update_job(job["id"], actor="user", next_follow_up_at=invalid_value)
+
+
+def test_create_and_update_normalize_or_clear_next_follow_up(service):
+    job = create_job(
+        service,
+        next_follow_up_at="2026-08-14T09:00:00+08:00",
+    )
+
+    assert job["application"]["next_follow_up_at"] == "2026-08-14T01:00:00Z"
+    cleared = service.update_job(job["id"], actor="user", next_follow_up_at=None)
+
+    assert cleared["application"]["next_follow_up_at"] is None
 
 
 def test_soft_delete_hides_job_and_history_from_public_operations(service):
@@ -466,6 +599,108 @@ def test_concurrent_same_transition_has_one_success_and_unbroken_event_chain(
         (None, "considering"),
         ("considering", "preparing"),
     ]
+
+
+def test_corrupt_persisted_job_lifecycle_fails_closed(database, service):
+    job = create_job(service)
+    with closing(database.connect()) as connection:
+        connection.execute("PRAGMA ignore_check_constraints=ON")
+        connection.execute(
+            "UPDATE jobs SET lifecycle_status = ? WHERE id = ?",
+            ("broken", job["id"]),
+        )
+
+    for operation in (
+        lambda: service.get_job(job["id"]),
+        service.list_jobs,
+    ):
+        with pytest.raises(DomainDataCorruptionError) as exc_info:
+            operation()
+        assert job["id"] in str(exc_info.value)
+        assert "lifecycle_status" in str(exc_info.value)
+        assert exc_info.value.__cause__ is None
+
+
+def test_corrupt_persisted_application_status_fails_closed_without_mutation(
+    database,
+    service,
+):
+    job = create_job(service)
+    application_id = job["application"]["id"]
+    with closing(database.connect()) as connection:
+        connection.execute("PRAGMA ignore_check_constraints=ON")
+        connection.execute(
+            "UPDATE applications SET status = ? WHERE id = ?",
+            ("broken", application_id),
+        )
+        event_count = connection.execute(
+            "SELECT COUNT(*) FROM application_events WHERE application_id = ?",
+            (application_id,),
+        ).fetchone()[0]
+        audit_count = connection.execute(
+            "SELECT COUNT(*) FROM audit_log WHERE entity_id = ?",
+            (application_id,),
+        ).fetchone()[0]
+
+    for operation in (
+        lambda: service.get_job(job["id"]),
+        service.list_jobs,
+        service.dashboard_counts,
+        lambda: service.transition_application(job["id"], "preparing", actor="user"),
+    ):
+        with pytest.raises(DomainDataCorruptionError) as exc_info:
+            operation()
+        assert application_id in str(exc_info.value)
+        assert "status" in str(exc_info.value)
+        assert exc_info.value.__cause__ is None
+
+    with closing(database.connect()) as connection:
+        assert (
+            connection.execute(
+                "SELECT status FROM applications WHERE id = ?", (application_id,)
+            ).fetchone()[0]
+            == "broken"
+        )
+        assert (
+            connection.execute(
+                "SELECT COUNT(*) FROM application_events WHERE application_id = ?",
+                (application_id,),
+            ).fetchone()[0]
+            == event_count
+        )
+        assert (
+            connection.execute(
+                "SELECT COUNT(*) FROM audit_log WHERE entity_id = ?",
+                (application_id,),
+            ).fetchone()[0]
+            == audit_count
+        )
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [("old_status", "broken"), ("new_status", "broken")],
+)
+def test_corrupt_application_event_status_fails_closed(
+    database,
+    service,
+    field,
+    value,
+):
+    job = create_job(service)
+    event = service.list_application_events(job["id"])[0]
+    with closing(database.connect()) as connection:
+        connection.execute(
+            f"UPDATE application_events SET {field} = ? WHERE id = ?",
+            (value, event["id"]),
+        )
+
+    with pytest.raises(DomainDataCorruptionError) as exc_info:
+        service.list_application_events(job["id"])
+
+    assert event["id"] in str(exc_info.value)
+    assert field in str(exc_info.value)
+    assert exc_info.value.__cause__ is None
 
 
 def test_missing_or_deleted_job_operations_raise_not_found(service):

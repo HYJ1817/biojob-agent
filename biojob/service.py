@@ -109,6 +109,8 @@ class BioJobService:
         notes: str = "",
         company_type: str | None = None,
         company_city: str | None = None,
+        next_follow_up_at: str | None = None,
+        application_notes: str = "",
     ) -> dict[str, Any]:
         company_name = _require_nonempty_string("company_name", company_name)
         title = _require_nonempty_string("title", title)
@@ -130,6 +132,8 @@ class BioJobService:
         notes = _normalize_notes("notes", notes)
         company_type = _normalize_job_text("company_type", company_type)
         company_city = _normalize_job_text("company_city", company_city)
+        next_follow_up_at = _parse_next_follow_up_at(next_follow_up_at)
+        application_notes = _normalize_notes("application_notes", application_notes)
 
         company_id = str(uuid4())
         job_id = str(uuid4())
@@ -174,8 +178,8 @@ class BioJobService:
                 job_id=job_id,
                 status=initial_status,
                 applied_at=None,
-                next_follow_up_at=None,
-                notes="",
+                next_follow_up_at=next_follow_up_at,
+                notes=application_notes,
                 created_at=created_at,
                 updated_at=created_at,
             )
@@ -233,48 +237,12 @@ class BioJobService:
             row = repository.get_job(job_id)
             if row is None:
                 raise DomainNotFoundError(f"job not found: {job_id}")
-            current_status = _parse_persisted_application_status(
-                row["application_status"], row["application_id"]
-            )
-            if new_status_value not in _APPLICATION_TRANSITIONS[current_status]:
-                raise DomainConflictError(
-                    f"cannot transition application from {current_status!r} "
-                    f"to {new_status_value!r}"
-                )
-            changed_at = _utc_now()
-            applied_at = (
-                changed_at
-                if new_status_value == ApplicationStatus.APPLIED.value
-                else None
-            )
-            repository.update_application_status(
-                application_id=row["application_id"],
-                status=new_status_value,
-                applied_at=applied_at,
-                updated_at=changed_at,
-            )
-            repository.insert_application_event(
-                event_id=str(uuid4()),
-                application_id=row["application_id"],
-                actor=actor,
-                old_status=current_status,
-                new_status=new_status_value,
-                note=note_value,
-                created_at=changed_at,
-            )
-            self._insert_audit(
+            self._transition_application_in_transaction(
                 repository,
-                action="application.status_changed",
-                entity_id=row["application_id"],
-                entity_type="application",
+                row=row,
+                new_status=new_status_value,
                 actor=actor,
-                metadata={
-                    "job_id": job_id,
-                    "old_status": current_status,
-                    "new_status": new_status_value,
-                    "note": note_value,
-                },
-                created_at=changed_at,
+                note=note_value,
             )
             updated = repository.get_job(job_id)
             if updated is None:
@@ -287,6 +255,59 @@ class BioJobService:
         finally:
             connection.close()
         return result
+
+    def _transition_application_in_transaction(
+        self,
+        repository: BioJobRepository,
+        *,
+        row: sqlite3.Row,
+        new_status: str,
+        actor: str,
+        note: str,
+        changed_at: str | None = None,
+    ) -> None:
+        _parse_persisted_lifecycle_status(row["lifecycle_status"], row["id"])
+        current_status = _parse_persisted_application_status(
+            row["application_status"], row["application_id"]
+        )
+        if new_status not in _APPLICATION_TRANSITIONS[current_status]:
+            raise DomainConflictError(
+                f"cannot transition application from {current_status!r} "
+                f"to {new_status!r}"
+            )
+        changed_at = changed_at or _utc_now()
+        applied_at = (
+            changed_at if new_status == ApplicationStatus.APPLIED.value else None
+        )
+        repository.update_application_status(
+            application_id=row["application_id"],
+            status=new_status,
+            applied_at=applied_at,
+            updated_at=changed_at,
+        )
+        repository.insert_application_event(
+            event_id=str(uuid4()),
+            application_id=row["application_id"],
+            actor=actor,
+            old_status=current_status,
+            new_status=new_status,
+            note=note,
+            created_at=changed_at,
+        )
+        self._insert_audit(
+            repository,
+            action="application.status_changed",
+            entity_id=row["application_id"],
+            entity_type="application",
+            actor=actor,
+            metadata={
+                "job_id": row["id"],
+                "old_status": current_status,
+                "new_status": new_status,
+                "note": note,
+            },
+            created_at=changed_at,
+        )
 
     def get_job(self, job_id: str) -> dict[str, Any]:
         job_id = _require_nonempty_string("job_id", job_id)
@@ -334,18 +355,10 @@ class BioJobService:
         status_keys = {"application_status", "status"} & set(changes)
         if len(status_keys) > 1:
             raise DomainValidationError("provide only one application status field")
+        status_value: str | None = None
         if status_keys:
-            if len(changes) != 1:
-                raise DomainValidationError(
-                    "application status changes must be submitted separately"
-                )
             status_key = status_keys.pop()
-            self.transition_application(
-                job_id,
-                changes[status_key],
-                actor=actor,
-            )
-            return self.get_job(job_id)
+            status_value = _parse_application_status(changes.pop(status_key))
 
         job_values: dict[str, str | None] = {}
         application_values: dict[str, str | None] = {}
@@ -359,7 +372,7 @@ class BioJobService:
             elif field == "notes":
                 job_values[field] = _normalize_notes(field, value)
             elif field == "next_follow_up_at":
-                application_values[field] = _normalize_job_text(field, value)
+                application_values[field] = _parse_next_follow_up_at(value)
             elif field == "application_notes":
                 application_values["notes"] = _normalize_notes(field, value)
             else:
@@ -372,6 +385,7 @@ class BioJobService:
             current = repository.get_job(job_id)
             if current is None:
                 raise DomainNotFoundError(f"job not found: {job_id}")
+            _job_dict(current)
             updated_at = _utc_now()
             if job_values:
                 repository.update_job_fields(
@@ -385,15 +399,25 @@ class BioJobService:
                     values=application_values,
                     updated_at=updated_at,
                 )
-            self._insert_audit(
-                repository,
-                action="job.updated",
-                entity_id=job_id,
-                entity_type="job",
-                actor=actor,
-                metadata={"fields": sorted(changes)},
-                created_at=updated_at,
-            )
+            if status_value is not None:
+                self._transition_application_in_transaction(
+                    repository,
+                    row=current,
+                    new_status=status_value,
+                    actor=actor,
+                    note="",
+                    changed_at=updated_at,
+                )
+            if changes:
+                self._insert_audit(
+                    repository,
+                    action="job.updated",
+                    entity_id=job_id,
+                    entity_type="job",
+                    actor=actor,
+                    metadata={"fields": sorted(changes)},
+                    created_at=updated_at,
+                )
             updated = repository.get_job(job_id)
             if updated is None:
                 raise RuntimeError("updated job could not be read back")
@@ -442,7 +466,11 @@ class BioJobService:
         connection = self.database.connect()
         try:
             rows = BioJobRepository(connection).dashboard_counts()
-            return {row["status"]: row["count"] for row in rows}
+            counts: dict[str, int] = {}
+            for row in rows:
+                status = _parse_persisted_application_status(row["status"], row["id"])
+                counts[status] = counts.get(status, 0) + 1
+            return counts
         finally:
             connection.close()
 
@@ -453,7 +481,7 @@ class BioJobService:
             rows = BioJobRepository(connection).list_application_events(job_id)
             if rows is None:
                 raise DomainNotFoundError(f"job not found: {job_id}")
-            return [dict(row) for row in rows]
+            return [_application_event_dict(row) for row in rows]
         finally:
             connection.close()
 
@@ -668,8 +696,14 @@ def _normalize_notes(name: str, value: Any) -> str:
 
 
 def _normalize_url(name: str, value: Any) -> str | None:
-    value = _normalize_job_text(name, value)
     if value is None:
+        return None
+    if not isinstance(value, str):
+        raise DomainValidationError(f"{name} must be a string or null")
+    if any(ord(character) < 32 or ord(character) == 127 for character in value):
+        raise DomainValidationError(f"{name} must not contain control characters")
+    value = value.strip()
+    if not value:
         return None
     try:
         parsed = urlsplit(value)
@@ -682,6 +716,8 @@ def _normalize_url(name: str, value: Any) -> str | None:
     if (
         parsed.scheme.lower() not in {"http", "https"}
         or not hostname
+        or parsed.username is not None
+        or parsed.password is not None
         or not _is_valid_url_hostname(hostname)
     ):
         raise DomainValidationError(
@@ -716,11 +752,34 @@ def _is_valid_url_hostname(hostname: str) -> bool:
 
 
 def _parse_lifecycle_status(value: Any) -> str:
-    if isinstance(value, str):
-        value = value.strip()
+    if not isinstance(value, str):
+        raise DomainValidationError("lifecycle_status must be a string")
+    value = value.strip()
     if value not in {"open", "closed", "unknown"}:
         raise DomainValidationError("lifecycle_status must be open, closed, or unknown")
     return value
+
+
+def _parse_next_follow_up_at(value: Any) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise DomainValidationError(
+            "next_follow_up_at must be a timezone-aware ISO-8601 datetime or null"
+        )
+    value = value.strip()
+    try:
+        parsed = datetime.fromisoformat(value)
+        offset = parsed.utcoffset()
+    except (TypeError, ValueError):
+        raise DomainValidationError(
+            "next_follow_up_at must be a timezone-aware ISO-8601 datetime or null"
+        ) from None
+    if offset is None:
+        raise DomainValidationError(
+            "next_follow_up_at must be a timezone-aware ISO-8601 datetime or null"
+        )
+    return parsed.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def _parse_application_status(value: Any) -> str:
@@ -735,12 +794,26 @@ def _parse_application_status(value: Any) -> str:
         ) from exc
 
 
-def _parse_persisted_application_status(value: Any, application_id: str) -> str:
+def _parse_persisted_lifecycle_status(value: Any, job_id: str) -> str:
+    if isinstance(value, str) and value in {"open", "closed", "unknown"}:
+        return value
+    raise DomainDataCorruptionError(
+        f"corrupt job entity {job_id}: lifecycle_status is invalid"
+    ) from None
+
+
+def _parse_persisted_application_status(
+    value: Any,
+    entity_id: str,
+    *,
+    field: str = "status",
+    entity_type: str = "application",
+) -> str:
     try:
         return ApplicationStatus(value).value
     except (TypeError, ValueError):
         raise DomainDataCorruptionError(
-            f"corrupt application entity {application_id}: invalid status"
+            f"corrupt {entity_type} entity {entity_id}: {field} is invalid"
         ) from None
 
 
@@ -812,10 +885,13 @@ def _profile_fact_dict(row: sqlite3.Row) -> dict[str, Any]:
 
 
 def _application_from_job_row(row: sqlite3.Row) -> dict[str, Any]:
+    status = _parse_persisted_application_status(
+        row["application_status"], row["application_id"]
+    )
     return {
         "id": row["application_id"],
         "job_id": row["id"],
-        "status": row["application_status"],
+        "status": status,
         "applied_at": row["application_applied_at"],
         "next_follow_up_at": row["application_next_follow_up_at"],
         "notes": row["application_notes"],
@@ -826,6 +902,9 @@ def _application_from_job_row(row: sqlite3.Row) -> dict[str, Any]:
 
 def _job_dict(row: sqlite3.Row) -> dict[str, Any]:
     result = dict(row)
+    result["lifecycle_status"] = _parse_persisted_lifecycle_status(
+        row["lifecycle_status"], row["id"]
+    )
     application = _application_from_job_row(row)
     company = {
         "id": row["company_id"],
@@ -854,6 +933,25 @@ def _job_dict(row: sqlite3.Row) -> dict[str, Any]:
     result["company"] = company
     result["links"] = links
     result["application"] = application
+    return result
+
+
+def _application_event_dict(row: sqlite3.Row) -> dict[str, Any]:
+    result = dict(row)
+    old_status = result["old_status"]
+    if old_status is not None:
+        result["old_status"] = _parse_persisted_application_status(
+            old_status,
+            result["id"],
+            field="old_status",
+            entity_type="application_event",
+        )
+    result["new_status"] = _parse_persisted_application_status(
+        result["new_status"],
+        result["id"],
+        field="new_status",
+        entity_type="application_event",
+    )
     return result
 
 
