@@ -79,6 +79,7 @@ from agent.context_compressor import (
     ContextCompressor,
 )
 from agent.interrupt_compat import request_hard_interrupt
+from hermes_constants import is_wsl, windows_path_to_wsl
 from tools.approval import (
     reset_hermes_interactive_context,
     set_hermes_interactive_context,
@@ -290,14 +291,19 @@ def _path_from_file_uri(uri: str) -> Path | None:
         path_text = unquote(raw)
 
     # file:///C:/Users/... or C:\Users\...
+    windows_path = None
     if len(path_text) >= 3 and path_text[0] == "/" and path_text[2] == ":" and path_text[1].isalpha():
-        drive = path_text[1].lower()
-        rest = path_text[3:].lstrip("/\\").replace("\\", "/")
-        return Path("/mnt") / drive / rest
-    if len(path_text) >= 2 and path_text[1] == ":" and path_text[0].isalpha():
-        drive = path_text[0].lower()
-        rest = path_text[2:].lstrip("/\\").replace("\\", "/")
-        return Path("/mnt") / drive / rest
+        windows_path = path_text[1:]
+    elif len(path_text) >= 2 and path_text[1] == ":" and path_text[0].isalpha():
+        windows_path = path_text
+
+    if windows_path is not None:
+        if os.name == "nt":
+            return Path(windows_path)
+        if is_wsl():
+            translated = windows_path_to_wsl(windows_path)
+            if translated is not None:
+                return Path(translated)
 
     return Path(path_text)
 
