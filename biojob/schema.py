@@ -193,6 +193,23 @@ MIGRATIONS: Sequence[tuple[int, str]] = (
             metadata_json TEXT NOT NULL DEFAULT '{}',
             created_at TEXT NOT NULL
         );
+
+        CREATE INDEX IF NOT EXISTS idx_source_runs_source_started
+            ON source_runs(source_id, started_at);
+        CREATE INDEX IF NOT EXISTS idx_jobs_company_created
+            ON jobs(company_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_job_sources_source_last_seen
+            ON job_sources(source_id, last_seen_at);
+        CREATE INDEX IF NOT EXISTS idx_job_matches_job_created
+            ON job_matches(job_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_candidate_decisions_job_created
+            ON candidate_decisions(job_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_application_events_application_created
+            ON application_events(application_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_resume_versions_job_created
+            ON resume_versions(job_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_audit_log_entity_created
+            ON audit_log(entity_type, entity_id, created_at);
         """,
     ),
 )
