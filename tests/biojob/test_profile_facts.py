@@ -442,6 +442,12 @@ def test_audit_log_preserves_inserted_causality_for_equal_timestamps(
         pytest.param("NaN", id="nan"),
         pytest.param("Infinity", id="positive-infinity"),
         pytest.param("-Infinity", id="negative-infinity"),
+        pytest.param("1e9999", id="positive-exponent-overflow"),
+        pytest.param("-1e9999", id="negative-exponent-overflow"),
+        pytest.param(
+            '{"nested":{"value":1e9999}}',
+            id="nested-exponent-overflow",
+        ),
     ],
 )
 def test_corrupt_value_rolls_back_status_and_audit(
@@ -477,13 +483,24 @@ def test_corrupt_value_rolls_back_status_and_audit(
     assert stored_audit_count == audit_count
 
 
-def test_usable_fact_list_reports_corrupt_entity_and_field(database, service):
+@pytest.mark.parametrize(
+    "corrupt_json",
+    [
+        pytest.param("{not-json", id="syntax-error"),
+        pytest.param('{"nested":[1e9999]}', id="nested-exponent-overflow"),
+    ],
+)
+def test_usable_fact_list_reports_corrupt_entity_and_field(
+    database,
+    service,
+    corrupt_json,
+):
     fact = create_fact(service)
     service.set_profile_fact_status(fact["id"], "confirmed", actor="reviewer")
     with closing(database.connect()) as connection:
         connection.execute(
             "UPDATE profile_facts SET value_json = ? WHERE id = ?",
-            ("{not-json", fact["id"]),
+            (corrupt_json, fact["id"]),
         )
 
     with pytest.raises(DomainDataCorruptionError) as exc_info:
@@ -492,6 +509,18 @@ def test_usable_fact_list_reports_corrupt_entity_and_field(database, service):
     assert fact["id"] in str(exc_info.value)
     assert "profile_facts" in str(exc_info.value)
     assert "value_json" in str(exc_info.value)
+
+
+def test_finite_floats_keep_float_semantics(service):
+    value = {"score": 1.25, "nested": [-2.5e100, 0.0]}
+    fact = create_fact(service, value=value)
+    service.set_profile_fact_status(fact["id"], "confirmed", actor="reviewer")
+
+    returned = service.list_usable_facts("resume")[0]["value"]
+
+    assert returned == value
+    assert isinstance(returned["score"], float)
+    assert all(isinstance(item, float) for item in returned["nested"])
 
 
 @pytest.mark.parametrize(

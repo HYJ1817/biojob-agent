@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import sqlite3
 from datetime import datetime, timezone
 from typing import Any
@@ -310,6 +311,7 @@ def _decode_json_field(
         return json.loads(
             raw_value,
             parse_constant=_reject_non_finite_json_constant,
+            parse_float=_parse_finite_json_float,
         )
     except (UnicodeDecodeError, TypeError, ValueError):
         raise DomainDataCorruptionError(
@@ -319,3 +321,10 @@ def _decode_json_field(
 
 def _reject_non_finite_json_constant(constant: str) -> None:
     raise ValueError(f"non-finite JSON constant: {constant}")
+
+
+def _parse_finite_json_float(number: str) -> float:
+    value = float(number)
+    if not math.isfinite(value):
+        raise ValueError(f"non-finite JSON number: {number}")
+    return value
