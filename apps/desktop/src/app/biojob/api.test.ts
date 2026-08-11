@@ -63,6 +63,7 @@ describe('BioJob desktop API boundary', () => {
       detail_url: 'https://example.test/job/1',
       title: '生物工艺工程师'
     }
+
     const fact = {
       category: 'skills',
       fact_key: 'cell-culture',

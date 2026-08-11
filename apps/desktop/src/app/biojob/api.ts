@@ -32,21 +32,30 @@ export const getBioJobDashboard = () => call<BioJobDashboard>({ path: '/api/bioj
 export const listJobs = () => itemList<BioJobRecord>('/api/biojob/jobs')
 export const getJob = (jobId: string) => call<BioJobRecord>({ path: `/api/biojob/jobs/${encodeURIComponent(jobId)}` })
 
-export function patchJob(jobId: string, body: { application_status?: ApplicationStatus; next_follow_up_at?: null | string; notes?: null | string }) {
+export function patchJob(
+  jobId: string,
+  body: { application_status?: ApplicationStatus; next_follow_up_at?: null | string; notes?: null | string }
+) {
   return call<BioJobRecord>({ body, method: 'PATCH', path: `/api/biojob/jobs/${encodeURIComponent(jobId)}` })
 }
 
-export function listCandidates(filters: {
-  city?: string
-  decision?: CandidateDecision
-  direction?: string
-  query?: string
-} = {}) {
+export function listCandidates(
+  filters: {
+    city?: string
+    decision?: CandidateDecision
+    direction?: string
+    query?: string
+  } = {}
+) {
   const params = new URLSearchParams()
   params.set('decision', filters.decision ?? 'pending')
+
   for (const key of ['query', 'direction', 'city'] as const) {
     const value = filters[key]?.trim()
-    if (value) params.set(key, value)
+
+    if (value) {
+      params.set(key, value)
+    }
   }
 
   return itemList<BioJobCandidate>(`/api/biojob/candidates?${params.toString()}`)

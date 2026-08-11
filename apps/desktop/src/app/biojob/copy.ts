@@ -1,0 +1,237 @@
+import { useI18n } from '@/i18n'
+
+const zh = {
+  title: '秋招工作台',
+  eyebrow: 'BIOJOB · 2027 届',
+  subtitle: '把岗位证据、个人事实和投递进度放在同一张实验记录里。',
+  nav: { overview: '今日概览', candidates: '候选岗位', applications: '投递表', facts: '个人事实', sources: '岗位来源' },
+  aiSettings: 'AI 设置',
+  refresh: '刷新',
+  loading: '正在整理求职数据',
+  errorTitle: '暂时无法读取求职数据',
+  errorDesc: '本地后端可能仍在启动，也可能需要重新连接。你的数据没有被删除。',
+  retry: '重试',
+  metrics: { pending: '待复核岗位', preparing: '准备中投递', sources: '启用岗位源', facts: '已确认事实' },
+  nextTitle: '下一步行动',
+  nextCandidate: '先复核候选岗位，只保留值得准备的机会。',
+  nextFacts: '确认个人事实后，匹配和简历才可以引用。',
+  nextApply: '进入“准备中”后再生成定制简历并投递。',
+  openCandidates: '开始复核',
+  openFacts: '检查事实',
+  candidateTitle: '候选岗位',
+  candidateSubtitle: '搜索结果先进入候选池；只有你选择“保留”才会写入投递表。',
+  searchJobs: '搜索公司、岗位或 JD',
+  noCandidates: '没有待复核岗位',
+  noCandidatesDesc: '可以手工导入一个岗位，或到“岗位来源”运行检索。',
+  importJob: '手工导入',
+  closeImport: '收起导入',
+  company: '公司',
+  role: '岗位',
+  detailUrl: 'JD 链接',
+  applyUrl: '申请链接（可选）',
+  city: '城市（可选）',
+  jdText: '粘贴 JD（可选）',
+  createCandidate: '加入候选池',
+  viewJd: '查看 JD',
+  applyNow: '立即申请',
+  careers: '公司招聘页',
+  keep: '保留并进入投递表',
+  later: '稍后再看',
+  ignore: '忽略',
+  matching: '初筛',
+  applicationTitle: '投递表',
+  applicationSubtitle: '每个岗位都保留跳转链接、状态、跟进时间和证据匹配报告。',
+  noApplications: '投递表还是空的',
+  noApplicationsDesc: '先在候选岗位中选择“保留并进入投递表”。',
+  status: '状态',
+  followUp: '下次跟进',
+  notes: '备注',
+  save: '保存',
+  runMatch: '生成匹配报告',
+  matchScore: '匹配分',
+  blocked: '硬性门槛未通过',
+  evidence: '证据维度',
+  gaps: '能力差距与信息缺口',
+  risks: '风险提示',
+  factsTitle: '个人事实',
+  factsSubtitle: '只有“已确认”且允许匹配/简历使用的事实会进入后续生成流程。',
+  noFacts: '还没有个人事实',
+  noFactsDesc: '先录入学历、专业、毕业年份和真实实验技能。',
+  addFact: '录入事实',
+  factCategory: '类别',
+  factKey: '事实键',
+  factValue: '事实内容',
+  visibility: '用途',
+  confirm: '确认',
+  reject: '拒绝',
+  pending: '待确认',
+  confirmed: '已确认',
+  rejected: '已拒绝',
+  sourcesTitle: '岗位来源',
+  sourcesSubtitle: '每个来源独立运行和报错，一个站点失败不会中断其他来源。',
+  noSources: '没有岗位来源',
+  run: '运行',
+  enabled: '已启用',
+  disabled: '已停用',
+  healthy: '正常',
+  failed: '失败',
+  unknown: '未检查',
+  lastChecked: '最近检查',
+  requestFailed: '操作失败，请检查输入或稍后重试。',
+  statusLabels: {
+    considering: '考虑中',
+    preparing: '准备中',
+    applied: '已投递',
+    assessment: '测评',
+    interview: '面试',
+    offer: 'Offer',
+    rejected: '未通过',
+    withdrawn: '已撤回',
+    expired: '已过期'
+  }
+} as const
+
+type Widen<T> = T extends string ? string : { [K in keyof T]: Widen<T[K]> }
+type BioJobCopy = Widen<typeof zh>
+
+const en: BioJobCopy = {
+  ...zh,
+  title: 'Graduate Search Desk',
+  eyebrow: 'BIOJOB · CLASS OF 2027',
+  subtitle: 'Keep job evidence, confirmed facts, and application progress in one lab notebook.',
+  nav: {
+    overview: 'Today',
+    candidates: 'Candidates',
+    applications: 'Applications',
+    facts: 'Profile facts',
+    sources: 'Sources'
+  },
+  aiSettings: 'AI settings',
+  refresh: 'Refresh',
+  loading: 'Organizing job-search data',
+  errorTitle: 'Job-search data is unavailable',
+  errorDesc: 'The local backend may still be starting. Your data has not been deleted.',
+  retry: 'Retry',
+  metrics: {
+    pending: 'Pending review',
+    preparing: 'In preparation',
+    sources: 'Enabled sources',
+    facts: 'Confirmed facts'
+  },
+  nextTitle: 'Next actions',
+  nextCandidate: 'Review candidates and keep only worthwhile opportunities.',
+  nextFacts: 'Confirm facts before matching or resume use.',
+  nextApply: 'Move to Preparing before generating a tailored resume.',
+  openCandidates: 'Review now',
+  openFacts: 'Review facts',
+  candidateTitle: 'Candidate jobs',
+  candidateSubtitle: 'Search results stay here until you explicitly keep them.',
+  searchJobs: 'Search company, role, or JD',
+  noCandidates: 'No candidates to review',
+  noCandidatesDesc: 'Import a job manually or run a source.',
+  importJob: 'Manual import',
+  closeImport: 'Close import',
+  company: 'Company',
+  role: 'Role',
+  detailUrl: 'JD link',
+  applyUrl: 'Apply link (optional)',
+  city: 'City (optional)',
+  jdText: 'Paste JD (optional)',
+  createCandidate: 'Add candidate',
+  viewJd: 'View JD',
+  applyNow: 'Apply',
+  careers: 'Careers page',
+  keep: 'Keep and track',
+  later: 'Review later',
+  ignore: 'Ignore',
+  matching: 'Screening',
+  applicationTitle: 'Application tracker',
+  applicationSubtitle: 'Every row retains links, status, follow-up, and evidence.',
+  noApplications: 'No applications yet',
+  noApplicationsDesc: 'Keep a candidate to create its tracker row.',
+  status: 'Status',
+  followUp: 'Next follow-up',
+  notes: 'Notes',
+  save: 'Save',
+  runMatch: 'Generate match report',
+  matchScore: 'Match score',
+  blocked: 'Hard requirement failed',
+  evidence: 'Evidence dimensions',
+  gaps: 'Gaps',
+  risks: 'Risks',
+  factsTitle: 'Profile facts',
+  factsSubtitle: 'Only confirmed facts permitted for matching/resume use can be consumed.',
+  noFacts: 'No profile facts yet',
+  noFactsDesc: 'Add education, major, graduation year, and real lab skills.',
+  addFact: 'Add fact',
+  factCategory: 'Category',
+  factKey: 'Fact key',
+  factValue: 'Fact value',
+  visibility: 'Use',
+  confirm: 'Confirm',
+  reject: 'Reject',
+  pending: 'Pending',
+  confirmed: 'Confirmed',
+  rejected: 'Rejected',
+  sourcesTitle: 'Job sources',
+  sourcesSubtitle: 'Sources run independently; one failure never stops the rest.',
+  noSources: 'No job sources',
+  run: 'Run',
+  enabled: 'Enabled',
+  disabled: 'Disabled',
+  healthy: 'Healthy',
+  failed: 'Failed',
+  unknown: 'Unchecked',
+  lastChecked: 'Last checked',
+  requestFailed: 'Operation failed. Check the input and try again.',
+  statusLabels: {
+    considering: 'Considering',
+    preparing: 'Preparing',
+    applied: 'Applied',
+    assessment: 'Assessment',
+    interview: 'Interview',
+    offer: 'Offer',
+    rejected: 'Rejected',
+    withdrawn: 'Withdrawn',
+    expired: 'Expired'
+  }
+}
+
+const ja: BioJobCopy = {
+  ...en,
+  title: '就活ワークデスク',
+  eyebrow: 'BIOJOB · 2027年卒',
+  subtitle: '求人の根拠、確認済みの事実、応募状況を一つの記録にまとめます。',
+  nav: { overview: '今日', candidates: '候補求人', applications: '応募管理', facts: '本人情報', sources: '求人ソース' },
+  aiSettings: 'AI 設定',
+  refresh: '更新',
+  retry: '再試行'
+}
+
+const zhHant: BioJobCopy = {
+  ...zh,
+  title: '秋招工作臺',
+  subtitle: '把職位證據、個人事實和投遞進度放在同一份實驗記錄中。',
+  nav: { overview: '今日概覽', candidates: '候選職位', applications: '投遞表', facts: '個人事實', sources: '職位來源' },
+  aiSettings: 'AI 設定',
+  refresh: '重新整理',
+  retry: '重試'
+}
+
+export function useBioJobCopy(): BioJobCopy {
+  const { locale } = useI18n()
+
+  if (locale === 'zh-hant') {
+    return zhHant
+  }
+
+  if (locale === 'zh') {
+    return zh
+  }
+
+  if (locale === 'ja') {
+    return ja
+  }
+
+  return en
+}
