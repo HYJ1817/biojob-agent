@@ -69,7 +69,9 @@ def test_resolve_workspace_for_file_uses_cwd_first(tmp_path: Path, monkeypatch):
 
 
 
-def test_normalize_path_expands_tilde(monkeypatch):
-    monkeypatch.setenv("HOME", "/home/user")
+def test_normalize_path_expands_tilde(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
     p = normalize_path("~/x.py")
-    assert p == os.path.abspath("/home/user/x.py")
+    assert p == os.path.abspath(str(home / "x.py"))
