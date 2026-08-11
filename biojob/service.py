@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import ipaddress
+import hashlib
 import json
 import math
 import re
 import sqlite3
+import unicodedata
 from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urlsplit
@@ -15,12 +17,14 @@ from uuid import uuid4
 from biojob.database import BioJobDatabase
 from biojob.domain import (
     ApplicationStatus,
+    CandidateDecision,
     DomainConflictError,
     DomainDataCorruptionError,
     DomainNotFoundError,
     DomainValidationError,
     FactVisibility,
     ProfileFactStatus,
+    RawJob,
 )
 from biojob.repository import BioJobRepository
 
@@ -80,6 +84,22 @@ _JOB_UPDATE_FIELDS = {
     "notes",
 }
 
+_MATCH_RULE_VERSION = "biojob-undergraduate-v1"
+_POSITIVE_TERMS = (
+    "生物工艺",
+    "生产",
+    "发酵",
+    "细胞培养",
+    "QA",
+    "QC",
+    "质量",
+    "GMP",
+    "实验员",
+    "本科",
+    "应届",
+)
+_HARD_GAP_TERMS = ("博士", "仅限硕士", "药物合成", "医药销售", "临床项目经理")
+
 
 class BioJobService:
     """Coordinate profile-fact validation, transactions, and audit records."""
@@ -87,6 +107,319 @@ class BioJobService:
     def __init__(self, database: BioJobDatabase | None = None) -> None:
         self.database = database or BioJobDatabase()
         self.database.initialize()
+
+    def ingest_candidate(
+        self,
+        raw_job: RawJob,
+        *,
+        source_id: str,
+        actor: str,
+    ) -> dict[str, Any]:
+        """Create or refresh a review candidate without creating an application."""
+        if not isinstance(raw_job, RawJob):
+            raise DomainValidationError("raw_job must be a RawJob")
+        source_id = _require_nonempty_string("source_id", source_id)
+        actor = _require_nonempty_string("actor", actor)
+        company_name = _normalize_candidate_text(
+            "company_name", raw_job.company_name, required=True
+        )
+        title = _normalize_candidate_text("title", raw_job.title, required=True)
+        assert company_name is not None
+        assert title is not None
+        city = _normalize_candidate_text("city", raw_job.city)
+        recruitment_type = _normalize_candidate_text(
+            "recruitment_type", raw_job.recruitment_type
+        )
+        jd_text = _normalize_candidate_text("jd_text", raw_job.jd_text)
+        external_id = _normalize_candidate_text("external_id", raw_job.external_id)
+        published_at = _normalize_candidate_text("published_at", raw_job.published_at)
+        deadline_at = _normalize_candidate_text("deadline_at", raw_job.deadline_at)
+        detail_url = _normalize_url("detail_url", raw_job.detail_url)
+        apply_url = _normalize_url("apply_url", raw_job.apply_url)
+        careers_url = _normalize_url("careers_url", raw_job.careers_url)
+        if detail_url is None:
+            raise DomainValidationError("detail_url must be a non-empty URL")
+
+        dedup_key = _candidate_dedup_key(company_name, title, city, recruitment_type)
+        direction = _infer_candidate_direction(title, jd_text)
+        snapshot_payload = {
+            "company_name": company_name,
+            "title": title,
+            "city": city,
+            "jd_text": jd_text,
+            "detail_url": detail_url,
+            "apply_url": apply_url,
+            "careers_url": careers_url,
+            "external_id": external_id,
+            "published_at": published_at,
+            "deadline_at": deadline_at,
+            "recruitment_type": recruitment_type,
+        }
+        snapshot_json = _serialize_json("raw_job", snapshot_payload)
+        content_hash = hashlib.sha256(snapshot_json.encode("utf-8")).hexdigest()
+
+        connection = self.database.connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            repository = BioJobRepository(connection)
+            if repository.get_source(source_id) is None:
+                raise DomainNotFoundError(f"source not found: {source_id}")
+            seen_at = _utc_now()
+            job = repository.get_active_job_by_dedup_key(dedup_key)
+            created = job is None
+            if job is None:
+                company = repository.upsert_company(
+                    company_id=str(uuid4()),
+                    canonical_name=company_name,
+                    company_type=None,
+                    city=city,
+                    aliases_json=_serialize_json("aliases", []),
+                    created_at=seen_at,
+                    updated_at=seen_at,
+                )
+                job_id = str(uuid4())
+                repository.insert_job(
+                    job_id=job_id,
+                    company_id=company["id"],
+                    title=title,
+                    direction=direction,
+                    city=city,
+                    recruitment_type=recruitment_type,
+                    education_requirement=None,
+                    major_requirement=None,
+                    jd_text=jd_text,
+                    detail_url=detail_url,
+                    apply_url=apply_url,
+                    careers_url=careers_url,
+                    published_at=published_at,
+                    deadline_at=deadline_at,
+                    lifecycle_status="unknown",
+                    notes="",
+                    created_at=seen_at,
+                    updated_at=seen_at,
+                    dedup_key=dedup_key,
+                )
+            else:
+                job_id = job["id"]
+                repository.update_job_fields(
+                    job_id=job_id,
+                    values={
+                        "title": title,
+                        "direction": direction,
+                        "city": city,
+                        "recruitment_type": recruitment_type,
+                        "jd_text": jd_text,
+                        "detail_url": detail_url,
+                        "apply_url": apply_url,
+                        "careers_url": careers_url,
+                        "published_at": published_at,
+                        "deadline_at": deadline_at,
+                    },
+                    updated_at=seen_at,
+                )
+            job_source = repository.upsert_job_source(
+                job_source_id=str(uuid4()),
+                job_id=job_id,
+                source_id=source_id,
+                external_id=external_id,
+                detail_url=detail_url,
+                apply_url=apply_url,
+                careers_url=careers_url,
+                seen_at=seen_at,
+            )
+            snapshot_inserted = repository.insert_job_snapshot(
+                snapshot_id=str(uuid4()),
+                job_source_id=job_source["id"],
+                content_hash=content_hash,
+                raw_jd=jd_text or "",
+                fetched_at=seen_at,
+            )
+            if snapshot_inserted:
+                match = _screen_candidate(title=title, jd_text=jd_text)
+                repository.insert_job_match(
+                    match_id=str(uuid4()),
+                    job_id=job_id,
+                    score=match["score"],
+                    recommendation=match["recommendation"],
+                    evidence_json=_serialize_json("evidence", match["evidence"]),
+                    rule_version=_MATCH_RULE_VERSION,
+                    created_at=seen_at,
+                )
+            if created:
+                repository.insert_candidate_decision(
+                    decision_id=str(uuid4()),
+                    job_id=job_id,
+                    decision=CandidateDecision.PENDING.value,
+                    actor=actor,
+                    note="",
+                    created_at=seen_at,
+                )
+                self._insert_audit(
+                    repository,
+                    action="candidate.discovered",
+                    entity_id=job_id,
+                    entity_type="job",
+                    actor=actor,
+                    metadata={"source_id": source_id, "dedup_key": dedup_key},
+                    created_at=seen_at,
+                )
+            elif snapshot_inserted:
+                self._insert_audit(
+                    repository,
+                    action="candidate.refreshed",
+                    entity_id=job_id,
+                    entity_type="job",
+                    actor=actor,
+                    metadata={"source_id": source_id},
+                    created_at=seen_at,
+                )
+            row = repository.get_candidate(job_id)
+            if row is None:
+                raise RuntimeError("ingested candidate could not be read back")
+            result = _candidate_dict(row)
+            connection.execute("COMMIT")
+        except sqlite3.IntegrityError as exc:
+            _rollback(connection)
+            raise DomainConflictError(f"candidate ingestion conflict: {exc}") from None
+        except Exception:
+            _rollback(connection)
+            raise
+        finally:
+            connection.close()
+        return result
+
+    def list_candidates(
+        self,
+        decision: str | CandidateDecision = CandidateDecision.PENDING,
+        *,
+        query: str | None = None,
+        direction: str | None = None,
+        city: str | None = None,
+    ) -> list[dict[str, Any]]:
+        decision_value = _parse_candidate_decision(decision)
+        query = _normalize_candidate_text("query", query)
+        direction = _normalize_candidate_text("direction", direction)
+        city = _normalize_candidate_text("city", city)
+        connection = self.database.connect()
+        try:
+            rows = BioJobRepository(connection).list_candidates(
+                decision=decision_value,
+                query=query,
+                direction=direction,
+                city=city,
+            )
+            return [_candidate_dict(row) for row in rows]
+        finally:
+            connection.close()
+
+    def get_candidate(self, job_id: str) -> dict[str, Any]:
+        job_id = _require_nonempty_string("job_id", job_id)
+        connection = self.database.connect()
+        try:
+            row = BioJobRepository(connection).get_candidate(job_id)
+            if row is None:
+                raise DomainNotFoundError(f"candidate not found: {job_id}")
+            return _candidate_dict(row)
+        finally:
+            connection.close()
+
+    def decide_candidate(
+        self,
+        job_id: str,
+        decision: str | CandidateDecision,
+        *,
+        actor: str,
+        note: str | None = None,
+    ) -> dict[str, Any]:
+        job_id = _require_nonempty_string("job_id", job_id)
+        actor = _require_nonempty_string("actor", actor)
+        decision_value = _parse_candidate_decision(decision)
+        note_value = "" if note is None else _normalize_notes("note", note)
+        connection = self.database.connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            repository = BioJobRepository(connection)
+            row = repository.get_candidate(job_id)
+            if row is None:
+                raise DomainNotFoundError(f"candidate not found: {job_id}")
+            current = _candidate_dict(row)
+            current_decision = current["decision"]
+            allowed = (
+                {CandidateDecision.PENDING.value}
+                if current_decision == CandidateDecision.LATER.value
+                else {
+                    CandidateDecision.KEPT.value,
+                    CandidateDecision.IGNORED.value,
+                    CandidateDecision.LATER.value,
+                    CandidateDecision.ERROR.value,
+                }
+                if current_decision == CandidateDecision.PENDING.value
+                else set()
+            )
+            if decision_value not in allowed:
+                raise DomainConflictError(
+                    f"cannot change candidate decision from {current_decision!r} "
+                    f"to {decision_value!r}"
+                )
+            decided_at = _utc_now()
+            repository.insert_candidate_decision(
+                decision_id=str(uuid4()),
+                job_id=job_id,
+                decision=decision_value,
+                actor=actor,
+                note=note_value,
+                created_at=decided_at,
+            )
+            application_id = None
+            if decision_value == CandidateDecision.KEPT.value:
+                if current["application"] is not None:
+                    raise DomainConflictError("candidate already has an application")
+                application_id = str(uuid4())
+                initial_status = ApplicationStatus.CONSIDERING.value
+                repository.insert_application(
+                    application_id=application_id,
+                    job_id=job_id,
+                    status=initial_status,
+                    applied_at=None,
+                    next_follow_up_at=None,
+                    notes=note_value,
+                    created_at=decided_at,
+                    updated_at=decided_at,
+                )
+                repository.insert_application_event(
+                    event_id=str(uuid4()),
+                    application_id=application_id,
+                    actor=actor,
+                    old_status=None,
+                    new_status=initial_status,
+                    note=note_value,
+                    created_at=decided_at,
+                )
+            self._insert_audit(
+                repository,
+                action="candidate.decided",
+                entity_id=job_id,
+                entity_type="job",
+                actor=actor,
+                metadata={
+                    "old_decision": current_decision,
+                    "new_decision": decision_value,
+                    "note": note_value,
+                    "application_id": application_id,
+                },
+                created_at=decided_at,
+            )
+            updated = repository.get_candidate(job_id)
+            if updated is None:
+                raise RuntimeError("decided candidate could not be read back")
+            result = _candidate_dict(updated)
+            connection.execute("COMMIT")
+        except Exception:
+            _rollback(connection)
+            raise
+        finally:
+            connection.close()
+        return result
 
     def create_job(
         self,
@@ -706,6 +1039,85 @@ def _normalize_job_text(name: str, value: Any) -> str | None:
     return value or None
 
 
+def _normalize_candidate_text(
+    name: str, value: Any, *, required: bool = False
+) -> str | None:
+    if value is None:
+        if required:
+            raise DomainValidationError(f"{name} must be a non-empty string")
+        return None
+    if not isinstance(value, str):
+        suffix = "" if required else " or null"
+        raise DomainValidationError(f"{name} must be a string{suffix}")
+    normalized = re.sub(r"\s+", " ", value).strip()
+    if not normalized:
+        if required:
+            raise DomainValidationError(f"{name} must be a non-empty string")
+        return None
+    return normalized
+
+
+def _canonical_candidate_key(value: str | None) -> str:
+    if value is None:
+        return ""
+    normalized = unicodedata.normalize("NFKC", value).casefold()
+    normalized = normalized.translate(
+        str.maketrans({"，": ",", "。": ".", "：": ":", "；": ";"})
+    )
+    return re.sub(r"[\s,.;:，。；：·•/_-]+", "", normalized)
+
+
+def _candidate_dedup_key(
+    company_name: str,
+    title: str,
+    city: str | None,
+    recruitment_type: str | None,
+) -> str:
+    identity = "\x1f".join(
+        _canonical_candidate_key(value)
+        for value in (company_name, title, city, recruitment_type)
+    )
+    return hashlib.sha256(identity.encode("utf-8")).hexdigest()
+
+
+def _infer_candidate_direction(title: str, jd_text: str | None) -> str | None:
+    content = f"{title}\n{jd_text or ''}".upper()
+    if any(term in content for term in ("QA", "QC", "质量", "GMP专员")):
+        return "质量"
+    if any(term in content for term in ("生产", "工艺", "发酵", "生物制药")):
+        return "生产/工艺"
+    if any(term in content for term in ("细胞培养", "实验员", "生物分析")):
+        return "实验技术"
+    return None
+
+
+def _screen_candidate(*, title: str, jd_text: str | None) -> dict[str, Any]:
+    content = f"{title}\n{jd_text or ''}"
+    upper_content = content.upper()
+    positive_terms = [term for term in _POSITIVE_TERMS if term.upper() in upper_content]
+    hard_gaps = [term for term in _HARD_GAP_TERMS if term in content]
+    score = max(
+        0, min(100, 30 + min(60, len(positive_terms) * 9) - 25 * len(hard_gaps))
+    )
+    if hard_gaps:
+        recommendation = "不建议"
+    elif score >= 70:
+        recommendation = "优先推荐"
+    elif score >= 50:
+        recommendation = "可以考虑"
+    else:
+        recommendation = "低匹配"
+    return {
+        "score": float(score),
+        "recommendation": recommendation,
+        "evidence": {
+            "positive_terms": positive_terms,
+            "hard_gaps": hard_gaps,
+            "rule_version": _MATCH_RULE_VERSION,
+        },
+    }
+
+
 def _normalize_notes(name: str, value: Any) -> str:
     if not isinstance(value, str):
         raise DomainValidationError(f"{name} must be a string")
@@ -809,6 +1221,26 @@ def _parse_application_status(value: Any) -> str:
         ) from exc
 
 
+def _parse_candidate_decision(value: Any) -> str:
+    try:
+        if isinstance(value, str):
+            value = value.strip()
+        return CandidateDecision(value).value
+    except (TypeError, ValueError) as exc:
+        raise DomainValidationError(
+            "candidate decision must be pending, kept, ignored, later, or error"
+        ) from exc
+
+
+def _parse_persisted_candidate_decision(value: Any, job_id: str) -> str:
+    try:
+        return CandidateDecision(value).value
+    except (TypeError, ValueError):
+        raise DomainDataCorruptionError(
+            f"corrupt candidate entity {job_id}: decision is invalid"
+        ) from None
+
+
 def _parse_persisted_lifecycle_status(value: Any, job_id: str) -> str:
     if isinstance(value, str) and value in {"open", "closed", "unknown"}:
         return value
@@ -889,13 +1321,120 @@ def _is_duplicate_profile_fact(exc: sqlite3.IntegrityError) -> bool:
 
 
 def _profile_fact_dict(row: sqlite3.Row) -> dict[str, Any]:
-    result = dict(row)
+    result: dict[str, Any] = dict(row)
     result["value"] = _decode_json_field(
         result.pop("value_json"),
         table="profile_facts",
         entity_id=result["id"],
         field="value_json",
     )
+    return result
+
+
+def _candidate_dict(row: sqlite3.Row) -> dict[str, Any]:
+    result: dict[str, Any] = dict(row)
+    job_id = result["id"]
+    result["lifecycle_status"] = _parse_persisted_lifecycle_status(
+        result["lifecycle_status"], job_id
+    )
+    decision = _parse_persisted_candidate_decision(result["candidate_decision"], job_id)
+    evidence = _decode_json_field(
+        result["match_evidence_json"],
+        table="job_matches",
+        entity_id=result["match_id"],
+        field="evidence_json",
+    )
+    if (
+        not isinstance(evidence, dict)
+        or not isinstance(evidence.get("positive_terms"), list)
+        or not isinstance(evidence.get("hard_gaps"), list)
+    ):
+        raise DomainDataCorruptionError(
+            f"corrupt job_matches entity {result['match_id']}: "
+            "evidence_json has an invalid shape"
+        )
+    try:
+        score = float(result["match_score"])
+    except (TypeError, ValueError):
+        score = math.nan
+    if not math.isfinite(score) or not 0 <= score <= 100:
+        raise DomainDataCorruptionError(
+            f"corrupt job_matches entity {result['match_id']}: score is invalid"
+        )
+    application = None
+    if result["application_id"] is not None:
+        application = {
+            "id": result["application_id"],
+            "job_id": job_id,
+            "status": _parse_persisted_application_status(
+                result["application_status"], result["application_id"]
+            ),
+            "applied_at": result["application_applied_at"],
+            "next_follow_up_at": result["application_next_follow_up_at"],
+            "notes": result["application_notes"],
+            "created_at": result["application_created_at"],
+            "updated_at": result["application_updated_at"],
+        }
+    company = {
+        "id": result["company_id"],
+        "canonical_name": result["company_name"],
+        "name": result["company_name"],
+        "company_type": result["company_company_type"],
+        "city": result["company_city"],
+    }
+    links = {
+        "detail": result["detail_url"],
+        "apply": result["apply_url"],
+        "careers": result["careers_url"],
+    }
+    match = {
+        "id": result["match_id"],
+        "score": score,
+        "recommendation": result["match_recommendation"],
+        "evidence": evidence,
+        "model_provider": result["match_model_provider"],
+        "model_name": result["match_model_name"],
+        "rule_version": result["match_rule_version"],
+        "created_at": result["match_created_at"],
+    }
+    decision_record = {
+        "id": result["candidate_decision_id"],
+        "decision": decision,
+        "actor": result["candidate_decision_actor"],
+        "note": result["candidate_decision_note"],
+        "created_at": result["candidate_decision_created_at"],
+    }
+    for field in (
+        "company_company_type",
+        "company_city",
+        "candidate_decision_id",
+        "candidate_decision",
+        "candidate_decision_actor",
+        "candidate_decision_note",
+        "candidate_decision_created_at",
+        "match_id",
+        "match_score",
+        "match_recommendation",
+        "match_evidence_json",
+        "match_model_provider",
+        "match_model_name",
+        "match_rule_version",
+        "match_created_at",
+        "application_id",
+        "application_status",
+        "application_applied_at",
+        "application_next_follow_up_at",
+        "application_notes",
+        "application_created_at",
+        "application_updated_at",
+    ):
+        result.pop(field)
+    result["decision"] = decision
+    result["decision_record"] = decision_record
+    result["match"] = match
+    result["application"] = application
+    result["company"] = company
+    result["links"] = links
     return result
 
 
@@ -956,7 +1495,7 @@ def _application_event_dict(
     *,
     job_id: str,
 ) -> dict[str, Any]:
-    result = dict(row)
+    result: dict[str, Any] = dict(row)
     old_status = result["old_status"]
     if old_status is not None:
         try:
@@ -1043,7 +1582,7 @@ def _raise_corrupt_application_history(
 
 
 def _audit_dict(row: sqlite3.Row) -> dict[str, Any]:
-    result = dict(row)
+    result: dict[str, Any] = dict(row)
     result["metadata"] = _decode_json_field(
         result.pop("metadata_json"),
         table="audit_log",

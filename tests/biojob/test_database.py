@@ -291,7 +291,7 @@ def test_initialize_applies_each_migration_exactly_once(tmp_path):
             "SELECT version, applied_at FROM schema_migrations"
         ).fetchall()
 
-    assert [row["version"] for row in original] == [1, 2]
+    assert [row["version"] for row in original] == [1, 2, 3]
     assert [tuple(row) for row in reapplied] == [tuple(row) for row in original]
 
 
@@ -312,7 +312,7 @@ def test_concurrent_initialize_applies_each_migration_once(tmp_path):
         versions = conn.execute(
             "SELECT version, COUNT(*) AS count FROM schema_migrations GROUP BY version"
         ).fetchall()
-    assert [tuple(row) for row in versions] == [(1, 1), (2, 1)]
+    assert [tuple(row) for row in versions] == [(1, 1), (2, 1), (3, 1)]
 
 
 def test_failed_migration_rolls_back_every_statement_and_can_retry(
@@ -323,7 +323,7 @@ def test_failed_migration_rolls_back_every_statement_and_can_retry(
     db = BioJobDatabase(path)
     broken_migrations = MIGRATIONS + (
         (
-            3,
+            4,
             """
             CREATE TABLE migration_probe (id TEXT PRIMARY KEY);
             INSERT INTO migration_probe(id) VALUES ('before-failure');
@@ -352,7 +352,7 @@ def test_failed_migration_rolls_back_every_statement_and_can_retry(
         versions = conn.execute(
             "SELECT version FROM schema_migrations ORDER BY version"
         ).fetchall()
-    assert [tuple(row) for row in versions] == [(1,), (2,)]
+    assert [tuple(row) for row in versions] == [(1,), (2,), (3,)]
 
 
 def test_rollback_failure_does_not_hide_the_migration_error(tmp_path, monkeypatch):

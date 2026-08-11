@@ -227,4 +227,44 @@ MIGRATIONS: Sequence[tuple[int, str]] = (
             WHERE dedup_key IS NOT NULL AND deleted_at IS NULL;
         """,
     ),
+    (
+        3,
+        """
+        CREATE TABLE job_sources_v3 (
+            id TEXT PRIMARY KEY,
+            job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+            source_id TEXT REFERENCES sources(id) ON DELETE SET NULL,
+            external_id TEXT,
+            detail_url TEXT,
+            apply_url TEXT,
+            careers_url TEXT,
+            first_seen_at TEXT NOT NULL,
+            last_seen_at TEXT NOT NULL,
+            is_active INTEGER NOT NULL DEFAULT 1,
+            UNIQUE(job_id, source_id, detail_url)
+        );
+
+        CREATE TABLE job_snapshots_v3 (
+            id TEXT PRIMARY KEY,
+            job_source_id TEXT NOT NULL
+                REFERENCES job_sources_v3(id) ON DELETE CASCADE,
+            content_hash TEXT NOT NULL,
+            raw_jd TEXT NOT NULL,
+            fetched_at TEXT NOT NULL,
+            UNIQUE(job_source_id, content_hash)
+        );
+
+        INSERT INTO job_sources_v3
+            SELECT * FROM job_sources;
+        INSERT INTO job_snapshots_v3
+            SELECT * FROM job_snapshots;
+        DROP TABLE job_snapshots;
+        DROP TABLE job_sources;
+        ALTER TABLE job_sources_v3 RENAME TO job_sources;
+        ALTER TABLE job_snapshots_v3 RENAME TO job_snapshots;
+
+        CREATE INDEX idx_job_sources_source_last_seen
+            ON job_sources(source_id, last_seen_at);
+        """,
+    ),
 )

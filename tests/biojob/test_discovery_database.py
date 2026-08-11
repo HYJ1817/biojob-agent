@@ -60,6 +60,37 @@ def _create_version_one_database(path) -> None:
                 "2026-08-12T00:00:00+00:00",
             ),
         )
+        conn.execute(
+            """
+            INSERT INTO job_sources(
+                id, job_id, source_id, external_id, detail_url,
+                first_seen_at, last_seen_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "job-source-existing",
+                "job-existing",
+                "source-existing",
+                "external-existing",
+                "https://example.test/jobs/existing",
+                "2026-08-12T00:00:00+00:00",
+                "2026-08-12T00:00:00+00:00",
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO job_snapshots(
+                id, job_source_id, content_hash, raw_jd, fetched_at
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                "snapshot-existing",
+                "job-source-existing",
+                "hash-existing",
+                "Existing JD",
+                "2026-08-12T00:00:00+00:00",
+            ),
+        )
         conn.commit()
 
 
@@ -97,7 +128,7 @@ def test_migration_two_preserves_rows_and_adds_discovery_metadata(tmp_path):
             "SELECT version, COUNT(*) FROM schema_migrations GROUP BY version "
             "ORDER BY version"
         ).fetchall()
-        assert [tuple(row) for row in versions] == [(1, 1), (2, 1)]
+        assert [tuple(row) for row in versions] == [(1, 1), (2, 1), (3, 1)]
 
         source_columns = {
             row["name"]: row for row in conn.execute("PRAGMA table_info(sources)")
@@ -119,6 +150,13 @@ def test_migration_two_preserves_rows_and_adds_discovery_metadata(tmp_path):
                 "SELECT title FROM jobs WHERE id = ?", ("job-existing",)
             ).fetchone()[0]
             == "Existing role"
+        )
+        assert (
+            conn.execute(
+                "SELECT raw_jd FROM job_snapshots WHERE id = ?",
+                ("snapshot-existing",),
+            ).fetchone()[0]
+            == "Existing JD"
         )
 
 
