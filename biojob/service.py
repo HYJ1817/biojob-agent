@@ -28,6 +28,7 @@ from biojob.domain import (
     RawJob,
 )
 from biojob.repository import BioJobRepository
+from biojob.matching import match_job as build_match_report
 from biojob.sources.base import JobSourceAdapter
 from biojob.sources.catalog import DEFAULT_SOURCES, default_adapter_registry
 
@@ -560,6 +561,8 @@ class BioJobService:
                     score=match["score"],
                     recommendation=match["recommendation"],
                     evidence_json=_serialize_json("evidence", match["evidence"]),
+                    model_provider=None,
+                    model_name=None,
                     rule_version=_MATCH_RULE_VERSION,
                     created_at=seen_at,
                 )
@@ -975,6 +978,89 @@ class BioJobService:
         connection = self.database.connect()
         try:
             return [_job_dict(row) for row in BioJobRepository(connection).list_jobs()]
+        finally:
+            connection.close()
+
+    def match_job(
+        self,
+        job_id: str,
+        *,
+        actor: str,
+        model_provider: str | None = None,
+        model_name: str | None = None,
+    ) -> dict[str, Any]:
+        job_id = _require_nonempty_string("job_id", job_id)
+        actor = _require_nonempty_string("actor", actor)
+        model_provider = _normalize_optional_string("model_provider", model_provider)
+        model_name = _normalize_optional_string("model_name", model_name)
+        connection = self.database.connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            repository = BioJobRepository(connection)
+            job_row = repository.get_job(job_id)
+            if job_row is None:
+                raise DomainNotFoundError(f"job not found: {job_id}")
+            facts = [
+                _profile_fact_dict(row)
+                for row in repository.list_usable_profile_facts(
+                    status=ProfileFactStatus.CONFIRMED.value,
+                    first_visibility=FactVisibility.MATCHING.value,
+                    second_visibility=FactVisibility.BOTH.value,
+                )
+            ]
+            report = build_match_report(_job_dict(job_row), facts)
+            report["fact_ids"] = [fact["id"] for fact in facts]
+            match_id = str(uuid4())
+            created_at = _utc_now()
+            repository.insert_job_match(
+                match_id=match_id,
+                job_id=job_id,
+                score=report["score"],
+                recommendation=report["recommendation"],
+                evidence_json=_serialize_json("match report", report),
+                model_provider=model_provider,
+                model_name=model_name,
+                rule_version=report["rule_version"],
+                created_at=created_at,
+            )
+            self._insert_audit(
+                repository,
+                action="job.matched",
+                entity_id=job_id,
+                entity_type="job",
+                actor=actor,
+                metadata={
+                    "match_id": match_id,
+                    "score": report["score"],
+                    "recommendation": report["recommendation"],
+                    "rule_version": report["rule_version"],
+                    "fact_ids": report["fact_ids"],
+                },
+                created_at=created_at,
+            )
+            row = repository.get_latest_job_match(job_id)
+            if row is None:
+                raise RuntimeError("created job match could not be read back")
+            result = _match_dict(row)
+            connection.execute("COMMIT")
+            return result
+        except Exception:
+            _rollback(connection)
+            raise
+        finally:
+            connection.close()
+
+    def get_latest_match(self, job_id: str) -> dict[str, Any]:
+        job_id = _require_nonempty_string("job_id", job_id)
+        connection = self.database.connect()
+        try:
+            repository = BioJobRepository(connection)
+            if repository.get_job(job_id) is None:
+                raise DomainNotFoundError(f"job not found: {job_id}")
+            row = repository.get_latest_job_match(job_id)
+            if row is None:
+                raise DomainNotFoundError(f"job match not found: {job_id}")
+            return _match_dict(row)
         finally:
             connection.close()
 
@@ -1750,6 +1836,65 @@ def _profile_fact_dict(row: sqlite3.Row) -> dict[str, Any]:
         entity_id=result["id"],
         field="value_json",
     )
+    return result
+
+
+def _match_dict(row: sqlite3.Row) -> dict[str, Any]:
+    evidence = _decode_json_field(
+        row["evidence_json"],
+        table="job_matches",
+        entity_id=row["id"],
+        field="evidence_json",
+    )
+    if not isinstance(evidence, dict):
+        raise DomainDataCorruptionError(
+            f"corrupt job_matches entity {row['id']}: evidence_json has an invalid shape"
+        )
+    required = {
+        "score": (int, float),
+        "level": str,
+        "recommendation": str,
+        "blocked": bool,
+        "hard_rules": list,
+        "dimensions": list,
+        "gaps": list,
+        "risks": list,
+        "confidence": str,
+        "rule_version": str,
+        "fact_ids": list,
+    }
+    if any(
+        not isinstance(evidence.get(key), expected)
+        for key, expected in required.items()
+    ):
+        raise DomainDataCorruptionError(
+            f"corrupt job_matches entity {row['id']}: evidence_json has an invalid shape"
+        )
+    try:
+        score = float(row["score"])
+    except (TypeError, ValueError):
+        score = math.nan
+    if (
+        not math.isfinite(score)
+        or not 0 <= score <= 100
+        or score != float(evidence["score"])
+        or row["recommendation"] != evidence["recommendation"]
+        or row["rule_version"] != evidence["rule_version"]
+    ):
+        raise DomainDataCorruptionError(
+            f"corrupt job_matches entity {row['id']}: persisted metadata disagrees with evidence"
+        )
+    result = dict(evidence)
+    result.update({
+        "id": row["id"],
+        "job_id": row["job_id"],
+        "score": score,
+        "recommendation": row["recommendation"],
+        "model_provider": row["model_provider"],
+        "model_name": row["model_name"],
+        "rule_version": row["rule_version"],
+        "created_at": row["created_at"],
+    })
     return result
 
 

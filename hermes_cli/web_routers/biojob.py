@@ -16,6 +16,7 @@ from biojob.api_models import (
     CandidateImport,
     JobCreate,
     JobPatch,
+    MatchRequest,
     ProfileFactCreate,
     ProfileFactPatch,
     SourceCreate,
@@ -204,6 +205,18 @@ async def create_job(body: JobCreate) -> dict[str, Any]:
 @router.get("/jobs/{job_id}")
 async def get_job(job_id: str) -> dict[str, Any]:
     return await _run_service(lambda: BioJobService().get_job(job_id))
+
+
+@router.post("/jobs/{job_id}/match", status_code=201)
+async def match_job(job_id: str, body: MatchRequest) -> dict[str, Any]:
+    return await _run_service(
+        lambda: BioJobService().match_job(job_id, actor=_ACTOR, **body.model_dump())
+    )
+
+
+@router.get("/jobs/{job_id}/match")
+async def get_job_match(job_id: str) -> dict[str, Any]:
+    return await _run_service(lambda: BioJobService().get_latest_match(job_id))
 
 
 @router.patch("/jobs/{job_id}")

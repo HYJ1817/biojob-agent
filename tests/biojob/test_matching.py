@@ -55,10 +55,23 @@ def test_match_returns_weighted_evidence_and_no_unsupported_claims():
     assert report["blocked"] is False
     assert 80 <= report["score"] <= 100
     assert report["level"] == "priority"
-    assert [dimension["weight"] for dimension in report["dimensions"]] == [25, 20, 25, 10, 10, 10]
-    assert sum(dimension["score"] for dimension in report["dimensions"]) == report["score"]
-    assert any("细胞培养" in evidence for evidence in report["dimensions"][2]["job_evidence"])
-    assert any("细胞培养" in evidence for evidence in report["dimensions"][2]["fact_evidence"])
+    assert [dimension["weight"] for dimension in report["dimensions"]] == [
+        25,
+        20,
+        25,
+        10,
+        10,
+        10,
+    ]
+    assert (
+        sum(dimension["score"] for dimension in report["dimensions"]) == report["score"]
+    )
+    assert any(
+        "细胞培养" in evidence for evidence in report["dimensions"][2]["job_evidence"]
+    )
+    assert any(
+        "细胞培养" in evidence for evidence in report["dimensions"][2]["fact_evidence"]
+    )
     assert all("论文" not in str(value) for value in report.values())
 
 
@@ -75,12 +88,16 @@ def test_match_returns_weighted_evidence_and_no_unsupported_claims():
     ],
 )
 def test_hard_rules_block_ineligible_jobs(overrides, expected_rule):
-    report = match_job(_job(**overrides), _facts(), now=datetime(2026, 8, 12, tzinfo=timezone.utc))
+    report = match_job(
+        _job(**overrides), _facts(), now=datetime(2026, 8, 12, tzinfo=timezone.utc)
+    )
 
     assert report["blocked"] is True
     assert report["level"] == "blocked"
     assert report["recommendation"] == "不建议投递"
-    assert expected_rule in {rule["rule"] for rule in report["hard_rules"] if rule["blocked"]}
+    assert expected_rule in {
+        rule["rule"] for rule in report["hard_rules"] if rule["blocked"]
+    }
 
 
 def test_preferred_degree_or_experience_is_a_risk_not_a_block():
@@ -116,7 +133,11 @@ def test_missing_evidence_is_explicit_and_reduces_confidence():
     assert report["confidence"] == "low"
     assert report["score"] < 50
     assert "缺少完整JD" in report["gaps"]
-    assert any("未在JD找到" in evidence for d in report["dimensions"] for evidence in d["job_evidence"])
+    assert any(
+        "未在JD找到" in evidence
+        for d in report["dimensions"]
+        for evidence in d["job_evidence"]
+    )
 
 
 def test_only_confirmed_matching_visible_facts_are_used_defensively():

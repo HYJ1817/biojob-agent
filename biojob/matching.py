@@ -18,8 +18,25 @@ _DIMENSIONS = (
     ("region_company", "地区与企业", 10),
     ("growth_quality", "成长与岗位质量", 10),
 )
-_EXCLUDED_DIRECTIONS = ("药物合成", "有机合成", "临床项目经理", "医药销售", "医疗器械销售")
-_QUALITY_TERMS = ("GMP", "工艺", "生产", "发酵", "细胞培养", "质量", "QA", "QC", "培训", "轮岗")
+_EXCLUDED_DIRECTIONS = (
+    "药物合成",
+    "有机合成",
+    "临床项目经理",
+    "医药销售",
+    "医疗器械销售",
+)
+_QUALITY_TERMS = (
+    "GMP",
+    "工艺",
+    "生产",
+    "发酵",
+    "细胞培养",
+    "质量",
+    "QA",
+    "QC",
+    "培训",
+    "轮岗",
+)
 _SKILL_ALIASES: dict[str, tuple[str, ...]] = {
     "细胞培养": ("细胞培养", "细胞复苏", "细胞计数"),
     "发酵工程": ("发酵", "发酵工程", "发酵工艺"),
@@ -73,7 +90,13 @@ def match_job(
             "direction",
         )
     ) + min(3, len(facts))
-    confidence = "high" if confidence_points >= 7 else "medium" if confidence_points >= 4 else "low"
+    confidence = (
+        "high"
+        if confidence_points >= 7
+        else "medium"
+        if confidence_points >= 4
+        else "low"
+    )
 
     if blocked:
         level = "blocked"
@@ -100,6 +123,13 @@ def match_job(
         "dimensions": dimensions,
         "gaps": _unique(gaps),
         "risks": _unique(risks),
+        "positive_terms": _unique(
+            evidence
+            for dimension in dimensions
+            for evidence in dimension["job_evidence"]
+            if not evidence.startswith("未在JD找到")
+        ),
+        "hard_gaps": [rule["message"] for rule in hard_rules if rule["blocked"]],
         "confidence": confidence,
         "rule_version": MATCH_RULE_VERSION,
     }
@@ -112,42 +142,99 @@ def _evaluate_hard_rules(
     now: datetime,
 ) -> tuple[list[dict[str, Any]], list[str]]:
     requirements = " ".join(
-        filter(None, (_clean(job.get("education_requirement")), _clean(job.get("jd_text"))))
+        filter(
+            None, (_clean(job.get("education_requirement")), _clean(job.get("jd_text")))
+        )
     )
     degree_block = bool(
-        re.search(r"(?:仅限|要求|学历[:：]?\s*)(?:博士|硕士)|(?:博士|硕士)(?:研究生)?及以上", requirements)
+        re.search(
+            r"(?:仅限|要求|学历[:：]?\s*)(?:博士|硕士)|(?:博士|硕士)(?:研究生)?及以上",
+            requirements,
+        )
     )
-    if "本科及以上" in requirements and ("硕士优先" in requirements or "博士优先" in requirements):
+    if "本科及以上" in requirements and (
+        "硕士优先" in requirements or "博士优先" in requirements
+    ):
         degree_block = False
     risks: list[str] = []
     if re.search(r"(?:硕士|博士|经验).{0,8}优先|有.{0,8}经验者优先", requirements):
         risks.append("JD包含学历或经验优先条件，但不是硬性门槛")
 
     experience_block = False
-    experience_match = re.search(r"([1-9]\d*)\s*年(?:及以上|以上)?[^。；;\n]{0,16}(?:全职|工作|相关)?经验", job_text)
+    experience_match = re.search(
+        r"([1-9]\d*)\s*年(?:及以上|以上)?[^。；;\n]{0,16}(?:全职|工作|相关)?经验",
+        job_text,
+    )
     if experience_match:
         sentence_start = max(job_text.rfind("。", 0, experience_match.start()), 0)
         sentence_end = job_text.find("。", experience_match.end())
-        sentence = job_text[sentence_start : sentence_end if sentence_end >= 0 else len(job_text)]
+        sentence = job_text[
+            sentence_start : sentence_end if sentence_end >= 0 else len(job_text)
+        ]
         experience_block = "优先" not in sentence
 
     grad_year = _graduation_year(facts)
-    cohort_years = {int(value) for value in re.findall(r"(20\d{2})届", _clean(job.get("recruitment_type")) or job_text)}
+    cohort_years = {
+        int(value)
+        for value in re.findall(
+            r"(20\d{2})届", _clean(job.get("recruitment_type")) or job_text
+        )
+    }
     cohort_block = bool(grad_year and cohort_years and grad_year not in cohort_years)
 
-    title_direction = " ".join(filter(None, (_clean(job.get("title")), _clean(job.get("direction")))))
-    excluded = next((term for term in _EXCLUDED_DIRECTIONS if term.lower() in title_direction.lower()), None)
+    title_direction = " ".join(
+        filter(None, (_clean(job.get("title")), _clean(job.get("direction"))))
+    )
+    excluded = next(
+        (
+            term
+            for term in _EXCLUDED_DIRECTIONS
+            if term.lower() in title_direction.lower()
+        ),
+        None,
+    )
 
     lifecycle = (_clean(job.get("lifecycle_status")) or "unknown").lower()
     deadline = _parse_datetime(job.get("deadline_at"))
-    unavailable = lifecycle == "closed" or (deadline is not None and deadline < now.astimezone(timezone.utc))
+    unavailable = lifecycle == "closed" or (
+        deadline is not None and deadline < now.astimezone(timezone.utc)
+    )
 
     rules = [
-        _hard_rule("degree", degree_block, "岗位明确要求硕士/博士学历", requirements or "未在JD找到学历硬门槛"),
-        _hard_rule("experience", experience_block, "岗位明确要求多年全职经验", experience_match.group(0) if experience_match else "未在JD找到全职经验硬门槛"),
-        _hard_rule("graduation_cohort", cohort_block, "招聘届别与2027届身份不符", f"招聘届别：{sorted(cohort_years)}" if cohort_years else "未在JD找到招聘届别"),
-        _hard_rule("excluded_direction", excluded is not None, f"岗位属于暂不重点方向：{excluded}" if excluded else "未命中排除方向", title_direction or "未在JD找到岗位方向"),
-        _hard_rule("availability", unavailable, "岗位已关闭或截止日期已过", f"状态：{lifecycle}；截止：{_clean(job.get('deadline_at')) or '未在JD找到'}"),
+        _hard_rule(
+            "degree",
+            degree_block,
+            "岗位明确要求硕士/博士学历",
+            requirements or "未在JD找到学历硬门槛",
+        ),
+        _hard_rule(
+            "experience",
+            experience_block,
+            "岗位明确要求多年全职经验",
+            experience_match.group(0)
+            if experience_match
+            else "未在JD找到全职经验硬门槛",
+        ),
+        _hard_rule(
+            "graduation_cohort",
+            cohort_block,
+            "招聘届别与2027届身份不符",
+            f"招聘届别：{sorted(cohort_years)}"
+            if cohort_years
+            else "未在JD找到招聘届别",
+        ),
+        _hard_rule(
+            "excluded_direction",
+            excluded is not None,
+            f"岗位属于暂不重点方向：{excluded}" if excluded else "未命中排除方向",
+            title_direction or "未在JD找到岗位方向",
+        ),
+        _hard_rule(
+            "availability",
+            unavailable,
+            "岗位已关闭或截止日期已过",
+            f"状态：{lifecycle}；截止：{_clean(job.get('deadline_at')) or '未在JD找到'}",
+        ),
     ]
     return rules, risks
 
@@ -159,15 +246,30 @@ def _score_dimensions(
     fact_text: str,
 ) -> list[dict[str, Any]]:
     preferred_directions = _fact_tokens(facts, "target_directions")
-    direction_text = " ".join(filter(None, (_clean(job.get("title")), _clean(job.get("direction")), job_text)))
-    direction_hits = [term for term in preferred_directions if term.lower() in direction_text.lower()]
+    direction_text = " ".join(
+        filter(None, (_clean(job.get("title")), _clean(job.get("direction")), job_text))
+    )
+    direction_hits = [
+        term for term in preferred_directions if term.lower() in direction_text.lower()
+    ]
 
     degree = _fact_value(facts, "degree")
     major = _fact_value(facts, "major")
     education_requirements = " ".join(
-        filter(None, (_clean(job.get("education_requirement")), _clean(job.get("major_requirement")), job_text))
+        filter(
+            None,
+            (
+                _clean(job.get("education_requirement")),
+                _clean(job.get("major_requirement")),
+                job_text,
+            ),
+        )
     )
-    education_hits = [value for value in (degree, major) if value and value.lower() in education_requirements.lower()]
+    education_hits = [
+        value
+        for value in (degree, major)
+        if value and value.lower() in education_requirements.lower()
+    ]
 
     skill_hits: list[str] = []
     for fact in facts:
@@ -179,34 +281,64 @@ def _score_dimensions(
             skill_hits.append(display)
 
     grad_year = _graduation_year(facts)
-    cohort_hit = bool(grad_year and (f"{grad_year}届" in job_text or "应届" in job_text))
+    cohort_hit = bool(
+        grad_year and (f"{grad_year}届" in job_text or "应届" in job_text)
+    )
 
     preferred_cities = _fact_tokens(facts, "cities")
     city = _clean(job.get("city")) or _clean((job.get("company") or {}).get("city"))
-    city_hits = [preferred for preferred in preferred_cities if city and preferred.lower() in city.lower()]
+    city_hits = [
+        preferred
+        for preferred in preferred_cities
+        if city and preferred.lower() in city.lower()
+    ]
 
     quality_hits = [term for term in _QUALITY_TERMS if term.lower() in job_text.lower()]
 
     raw = (
-        (25 if direction_hits else 12 if _clean(job.get("direction")) and not preferred_directions else 0, direction_hits, preferred_directions),
-        (min(20, len(education_hits) * 10), education_hits, [value for value in (degree, major) if value]),
-        (min(25, len(_unique(skill_hits)) * 12.5), _unique(skill_hits), _unique(skill_hits)),
-        (10 if cohort_hit else 0, [f"{grad_year}届/应届匹配"] if cohort_hit else [], [f"毕业年份：{grad_year}"] if grad_year else []),
-        (10 if city_hits else 0, [f"工作城市：{city}"] if city else [], [f"意向城市：{hit}" for hit in city_hits]),
+        (
+            25
+            if direction_hits
+            else 12
+            if _clean(job.get("direction")) and not preferred_directions
+            else 0,
+            direction_hits,
+            preferred_directions,
+        ),
+        (
+            min(20, len(education_hits) * 10),
+            education_hits,
+            [value for value in (degree, major) if value],
+        ),
+        (
+            min(25, len(_unique(skill_hits)) * 12.5),
+            _unique(skill_hits),
+            _unique(skill_hits),
+        ),
+        (
+            10 if cohort_hit else 0,
+            [f"{grad_year}届/应届匹配"] if cohort_hit else [],
+            [f"毕业年份：{grad_year}"] if grad_year else [],
+        ),
+        (
+            10 if city_hits else 0,
+            [f"工作城市：{city}"] if city else [],
+            [f"意向城市：{hit}" for hit in city_hits],
+        ),
         (min(10, len(quality_hits) * 2.5), quality_hits, []),
     )
     dimensions = []
-    for (key, label, weight), (score, job_evidence, fact_evidence) in zip(_DIMENSIONS, raw, strict=True):
-        dimensions.append(
-            {
-                "key": key,
-                "label": label,
-                "weight": weight,
-                "score": round(float(score), 1),
-                "job_evidence": job_evidence or ["未在JD找到可计分证据"],
-                "fact_evidence": fact_evidence or ["未找到对应的已确认个人事实"],
-            }
-        )
+    for (key, label, weight), (score, job_evidence, fact_evidence) in zip(
+        _DIMENSIONS, raw, strict=True
+    ):
+        dimensions.append({
+            "key": key,
+            "label": label,
+            "weight": weight,
+            "score": round(float(score), 1),
+            "job_evidence": job_evidence or ["未在JD找到可计分证据"],
+            "fact_evidence": fact_evidence or ["未找到对应的已确认个人事实"],
+        })
     return dimensions
 
 
@@ -215,7 +347,10 @@ def _hard_rule(rule: str, blocked: bool, message: str, evidence: str) -> dict[st
 
 
 def _fact_is_usable(fact: Mapping[str, Any]) -> bool:
-    return fact.get("status") == "confirmed" and fact.get("visibility") in {"matching", "both"}
+    return fact.get("status") == "confirmed" and fact.get("visibility") in {
+        "matching",
+        "both",
+    }
 
 
 def _fact_value(facts: Iterable[Mapping[str, Any]], key: str) -> str | None:
@@ -255,7 +390,9 @@ def _display_value(value: Any) -> str:
     if isinstance(value, list):
         return "、".join(filter(None, (_display_value(item) for item in value)))
     if isinstance(value, Mapping):
-        return "、".join(filter(None, (_display_value(item) for item in value.values())))
+        return "、".join(
+            filter(None, (_display_value(item) for item in value.values()))
+        )
     return ""
 
 

@@ -448,24 +448,46 @@ class BioJobRepository:
         score: float,
         recommendation: str,
         evidence_json: str,
+        model_provider: str | None,
+        model_name: str | None,
         rule_version: str,
         created_at: str,
     ) -> None:
         self.connection.execute(
             "INSERT INTO job_matches "
             "(id, job_id, score, recommendation, evidence_json, model_provider, "
-            "model_name, rule_version, created_at) VALUES (?, ?, ?, ?, ?, NULL, "
-            "NULL, ?, ?)",
+            "model_name, rule_version, created_at) VALUES (?, ?, ?, ?, ?, ?, "
+            "?, ?, ?)",
             (
                 match_id,
                 job_id,
                 score,
                 recommendation,
                 evidence_json,
+                model_provider,
+                model_name,
                 rule_version,
                 created_at,
             ),
         )
+
+    def get_latest_job_match(self, job_id: str) -> sqlite3.Row | None:
+        return self.connection.execute(
+            "SELECT job_matches.* FROM job_matches "
+            "JOIN jobs ON jobs.id = job_matches.job_id "
+            "WHERE job_matches.job_id = ? AND jobs.deleted_at IS NULL "
+            "ORDER BY job_matches.created_at DESC, job_matches.rowid DESC LIMIT 1",
+            (job_id,),
+        ).fetchone()
+
+    def list_job_matches(self, job_id: str) -> list[sqlite3.Row]:
+        return self.connection.execute(
+            "SELECT job_matches.* FROM job_matches "
+            "JOIN jobs ON jobs.id = job_matches.job_id "
+            "WHERE job_matches.job_id = ? AND jobs.deleted_at IS NULL "
+            "ORDER BY job_matches.created_at DESC, job_matches.rowid DESC",
+            (job_id,),
+        ).fetchall()
 
     def insert_candidate_decision(
         self,

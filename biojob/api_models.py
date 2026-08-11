@@ -226,6 +226,11 @@ class SourcePatch(_RequestModel):
         return self
 
 
+class MatchRequest(_RequestModel):
+    model_provider: NonBlank100 | None = None
+    model_name: NonBlank200 | None = None
+
+
 def _validate_url(value: object) -> object:
     if value is None:
         return None
