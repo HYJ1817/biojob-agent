@@ -180,6 +180,13 @@ def test_patch_job_fields_and_legal_application_chain(client):
     assert cleared.json()["notes"] == ""
     assert cleared.json()["application"]["next_follow_up_at"] is None
 
+    whitespace_cleared = client.patch(
+        f"/api/biojob/jobs/{job['id']}",
+        json={"notes": "   "},
+    )
+    assert whitespace_cleared.status_code == 200
+    assert whitespace_cleared.json()["notes"] == ""
+
 
 def test_soft_delete_excludes_job_from_all_reads(client):
     job = _create_job(client)
@@ -266,6 +273,99 @@ def test_profile_fact_rejects_non_finite_json_numbers(client, constant):
     )
 
     assert response.status_code == 422, response.text
+
+
+@pytest.mark.parametrize(
+    "method,path,content",
+    [
+        (
+            "post",
+            "/api/biojob/jobs",
+            '{"company_name":NaN,"title":"Scientist"}',
+        ),
+        (
+            "post",
+            "/api/biojob/jobs",
+            '{"company_name":"Acme","title":"Scientist","extra":{"nested":[Infinity]}}',
+        ),
+        ("patch", "/api/biojob/jobs/missing", '{"notes":-Infinity}'),
+        (
+            "patch",
+            "/api/biojob/jobs/missing",
+            '{"extra":{"nested":Infinity}}',
+        ),
+    ],
+)
+def test_all_request_models_reject_non_finite_json_without_writes(
+    client, method, path, content
+):
+    response = client.request(
+        method,
+        path,
+        content=content,
+        headers={"content-type": "application/json"},
+    )
+
+    assert response.status_code == 422, response.text
+    assert client.get("/api/biojob/jobs").json() == {"items": []}
+
+
+@pytest.mark.parametrize("deleted", ["true", 1, 1.0, False])
+def test_deleted_accepts_only_json_true_and_never_coerces(client, deleted):
+    job = _create_job(client)
+
+    response = client.patch(
+        f"/api/biojob/jobs/{job['id']}",
+        json={"deleted": deleted},
+    )
+
+    assert response.status_code == 422, response.text
+    assert client.get(f"/api/biojob/jobs/{job['id']}").status_code == 200
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "city",
+        "direction",
+        "recruitment_type",
+        "education_requirement",
+        "major_requirement",
+        "published_at",
+        "deadline_at",
+        "company_type",
+        "company_city",
+        "jd_text",
+        "detail_url",
+        "notes",
+        "application_notes",
+    ],
+)
+def test_provided_optional_job_text_rejects_blank(client, field):
+    response = client.post(
+        "/api/biojob/jobs",
+        json=_job_payload(**{field: "   "}),
+    )
+
+    assert response.status_code == 422, response.text
+    assert client.get("/api/biojob/jobs").json() == {"items": []}
+
+
+def test_provided_profile_fact_source_ref_rejects_blank(client):
+    response = client.post(
+        "/api/biojob/profile-facts",
+        json={
+            "category": "laboratory",
+            "fact_key": "cck8",
+            "value": {"skill": "CCK-8"},
+            "source_type": "user",
+            "source_ref": "   ",
+            "visibility": "both",
+        },
+    )
+
+    assert response.status_code == 422, response.text
+    assert client.get("/api/biojob/profile-facts").json() == {"items": []}
 
 
 def test_illegal_application_transition_returns_409(client):

@@ -12,6 +12,7 @@ from pydantic import (
     ConfigDict,
     Field,
     JsonValue,
+    StrictBool,
     StringConstraints,
     field_validator,
     model_validator,
@@ -41,17 +42,43 @@ NonBlank200 = Annotated[
     str,
     StringConstraints(strip_whitespace=True, min_length=1, max_length=200),
 ]
-ShortText = Annotated[str, StringConstraints(strip_whitespace=True, max_length=300)]
-LongText = Annotated[str, StringConstraints(strip_whitespace=True, max_length=10_000)]
+ShortText = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1, max_length=300),
+]
+LongText = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1, max_length=10_000),
+]
 JobDescription = Annotated[
     str,
-    StringConstraints(strip_whitespace=True, max_length=100_000),
+    StringConstraints(strip_whitespace=True, min_length=1, max_length=100_000),
 ]
-UrlText = Annotated[str, StringConstraints(strip_whitespace=True, max_length=2_048)]
+UrlText = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1, max_length=2_048),
+]
 
 
 class _RequestModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_non_finite_json(cls, data: Any) -> Any:
+        sanitized, found = _sanitize_non_finite(data)
+        if not found:
+            return data
+        if isinstance(data, dict) and isinstance(sanitized, dict):
+            data.clear()
+            data.update(sanitized)
+            raise ValueError("request body must not contain NaN or Infinity")
+        if isinstance(data, list) and isinstance(sanitized, list):
+            data[:] = sanitized
+            raise ValueError("request body must not contain NaN or Infinity")
+        # A model body must be an object. Returning the finite placeholder lets
+        # Pydantic produce a JSON-safe structural 422 for a bare NaN body.
+        return sanitized
 
 
 class ProfileFactCreate(_RequestModel):
@@ -61,20 +88,6 @@ class ProfileFactCreate(_RequestModel):
     source_type: NonBlank100
     source_ref: ShortText | None = None
     visibility: FactVisibilityValue
-
-    @model_validator(mode="before")
-    @classmethod
-    def value_must_be_finite(cls, data: Any) -> Any:
-        if not isinstance(data, dict) or "value" not in data:
-            return data
-        sanitized, found = _sanitize_non_finite(data["value"])
-        if found:
-            # FastAPI includes rejected input in its 422 envelope. Replace the
-            # non-standard floats before raising so encoding that envelope does
-            # not itself fail and turn a client error into a 500 response.
-            data["value"] = sanitized
-            raise ValueError("value must not contain NaN or Infinity")
-        return data
 
 
 class ProfileFactPatch(_RequestModel):
@@ -124,7 +137,7 @@ class JobPatch(_RequestModel):
     next_follow_up_at: ShortText | None = None
     lifecycle_status: LifecycleStatusValue | None = None
     application_status: ApplicationStatusValue | None = None
-    deleted: bool | None = None
+    deleted: StrictBool | None = None
 
     @field_validator("notes")
     @classmethod
