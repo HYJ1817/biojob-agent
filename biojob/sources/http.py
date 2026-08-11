@@ -48,7 +48,7 @@ class SafeHttpClient:
         max_redirects: int = 5,
         max_body_bytes: int = 2 * 1024 * 1024,
     ) -> None:
-        self.client = client or httpx.Client(trust_env=False)
+        self.client = client
         self.resolver = resolver or _resolve_hostname
         self.timeout_seconds = timeout_seconds
         self.max_redirects = max_redirects
@@ -94,12 +94,18 @@ class SafeHttpClient:
         return url
 
     def get(self, url: str) -> SafeHttpResponse:
+        if self.client is not None:
+            return self._get_with_client(self.client, url)
+        with httpx.Client(trust_env=False) as client:
+            return self._get_with_client(client, url)
+
+    def _get_with_client(self, client: httpx.Client, url: str) -> SafeHttpResponse:
         current_url = url
         redirects = 0
         while True:
             current_url = self.validate_public_url(current_url)
             try:
-                with self.client.stream(
+                with client.stream(
                     "GET",
                     current_url,
                     headers={"User-Agent": _USER_AGENT, "Accept": "*/*"},

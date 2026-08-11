@@ -218,6 +218,139 @@ class BioJobRepository:
             "SELECT * FROM sources WHERE id = ?", (source_id,)
         ).fetchone()
 
+    def get_source_by_name(self, name: str) -> sqlite3.Row | None:
+        return self.connection.execute(
+            "SELECT * FROM sources WHERE name = ?", (name,)
+        ).fetchone()
+
+    def list_sources(self, *, enabled_only: bool = False) -> list[sqlite3.Row]:
+        where = " WHERE enabled = 1" if enabled_only else ""
+        return self.connection.execute(
+            "SELECT * FROM sources" + where + " ORDER BY created_at, rowid"
+        ).fetchall()
+
+    def insert_source(
+        self,
+        *,
+        source_id: str,
+        name: str,
+        adapter_type: str,
+        enabled: bool,
+        config_json: str,
+        description: str | None,
+        created_at: str,
+    ) -> None:
+        self.connection.execute(
+            "INSERT INTO sources "
+            "(id, name, adapter_type, enabled, health_status, config_json, "
+            "description, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, 'unknown', ?, ?, ?, ?)",
+            (
+                source_id,
+                name,
+                adapter_type,
+                int(enabled),
+                config_json,
+                description,
+                created_at,
+                created_at,
+            ),
+        )
+
+    def update_source(
+        self,
+        *,
+        source_id: str,
+        values: dict[str, str | int | None],
+        updated_at: str,
+    ) -> int:
+        allowed = {"name", "enabled", "config_json", "description"}
+        if not values or not set(values) <= allowed:
+            raise ValueError("invalid source update fields")
+        cursor = self.connection.execute(
+            "UPDATE sources SET "
+            "name = CASE WHEN ? THEN ? ELSE name END, "
+            "enabled = CASE WHEN ? THEN ? ELSE enabled END, "
+            "config_json = CASE WHEN ? THEN ? ELSE config_json END, "
+            "description = CASE WHEN ? THEN ? ELSE description END, "
+            "updated_at = ? WHERE id = ?",
+            (
+                int("name" in values),
+                values.get("name"),
+                int("enabled" in values),
+                values.get("enabled"),
+                int("config_json" in values),
+                values.get("config_json"),
+                int("description" in values),
+                values.get("description"),
+                updated_at,
+                source_id,
+            ),
+        )
+        return cursor.rowcount
+
+    def insert_source_run(
+        self,
+        *,
+        run_id: str,
+        source_id: str,
+        started_at: str,
+    ) -> None:
+        self.connection.execute(
+            "INSERT INTO source_runs "
+            "(id, source_id, status, cursor_json, result_count, started_at) "
+            "VALUES (?, ?, 'running', '{}', 0, ?)",
+            (run_id, source_id, started_at),
+        )
+
+    def finish_source_run(
+        self,
+        *,
+        run_id: str,
+        status: str,
+        result_count: int,
+        error_summary: str | None,
+        finished_at: str,
+    ) -> int:
+        cursor = self.connection.execute(
+            "UPDATE source_runs SET status = ?, result_count = ?, "
+            "error_summary = ?, finished_at = ? "
+            "WHERE id = ? AND status = 'running'",
+            (status, result_count, error_summary, finished_at, run_id),
+        )
+        return cursor.rowcount
+
+    def update_source_health(
+        self,
+        *,
+        source_id: str,
+        health_status: str,
+        checked_at: str,
+    ) -> int:
+        cursor = self.connection.execute(
+            "UPDATE sources SET health_status = ?, last_checked_at = ?, "
+            "updated_at = ? WHERE id = ?",
+            (health_status, checked_at, checked_at, source_id),
+        )
+        return cursor.rowcount
+
+    def get_source_run(self, run_id: str) -> sqlite3.Row | None:
+        return self.connection.execute(
+            _SOURCE_RUN_SELECT + " WHERE source_runs.id = ?", (run_id,)
+        ).fetchone()
+
+    def list_source_runs(self, source_id: str | None = None) -> list[sqlite3.Row]:
+        if source_id is None:
+            return self.connection.execute(
+                _SOURCE_RUN_SELECT
+                + " ORDER BY source_runs.started_at DESC, source_runs.rowid DESC"
+            ).fetchall()
+        return self.connection.execute(
+            _SOURCE_RUN_SELECT + " WHERE source_runs.source_id = ? "
+            "ORDER BY source_runs.started_at DESC, source_runs.rowid DESC",
+            (source_id,),
+        ).fetchall()
+
     def get_active_job_by_dedup_key(self, dedup_key: str) -> sqlite3.Row | None:
         return self.connection.execute(
             "SELECT * FROM jobs WHERE dedup_key = ? AND deleted_at IS NULL",
@@ -678,4 +811,12 @@ JOIN companies ON companies.id = jobs.company_id
 JOIN latest_decision ON latest_decision.job_id = jobs.id
 JOIN latest_match ON latest_match.job_id = jobs.id
 LEFT JOIN applications ON applications.job_id = jobs.id
+"""
+
+
+_SOURCE_RUN_SELECT = """
+SELECT source_runs.*, sources.name AS source_name,
+       sources.adapter_type AS source_adapter_type
+FROM source_runs
+JOIN sources ON sources.id = source_runs.source_id
 """

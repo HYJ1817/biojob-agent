@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 import ipaddress
 import hashlib
 import json
@@ -27,6 +28,8 @@ from biojob.domain import (
     RawJob,
 )
 from biojob.repository import BioJobRepository
+from biojob.sources.base import JobSourceAdapter
+from biojob.sources.catalog import DEFAULT_SOURCES, default_adapter_registry
 
 
 _APPLICATION_TRANSITIONS: dict[str, frozenset[str]] = {
@@ -104,9 +107,253 @@ _HARD_GAP_TERMS = ("博士", "仅限硕士", "药物合成", "医药销售", "�
 class BioJobService:
     """Coordinate profile-fact validation, transactions, and audit records."""
 
-    def __init__(self, database: BioJobDatabase | None = None) -> None:
+    def __init__(
+        self,
+        database: BioJobDatabase | None = None,
+        *,
+        source_adapters: Mapping[str, JobSourceAdapter] | None = None,
+    ) -> None:
         self.database = database or BioJobDatabase()
         self.database.initialize()
+        self.source_adapters = default_adapter_registry()
+        if source_adapters is not None:
+            self.source_adapters.update(source_adapters)
+
+    def ensure_default_sources(self) -> list[dict[str, Any]]:
+        connection = self.database.connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            repository = BioJobRepository(connection)
+            for default in DEFAULT_SOURCES:
+                if (
+                    repository.get_source_by_name(default.name) is not None
+                    or repository.get_source(default.source_id) is not None
+                ):
+                    continue
+                created_at = _utc_now()
+                repository.insert_source(
+                    source_id=default.source_id,
+                    name=default.name,
+                    adapter_type=default.adapter_type,
+                    enabled=default.enabled,
+                    config_json=_serialize_json("config", default.config),
+                    description=default.description,
+                    created_at=created_at,
+                )
+                self._insert_audit(
+                    repository,
+                    action="source.default_created",
+                    entity_id=default.source_id,
+                    entity_type="source",
+                    actor="system",
+                    metadata={"name": default.name},
+                    created_at=created_at,
+                )
+            result = [_source_dict(row) for row in repository.list_sources()]
+            connection.execute("COMMIT")
+        except Exception:
+            _rollback(connection)
+            raise
+        finally:
+            connection.close()
+        return result
+
+    def list_sources(self) -> list[dict[str, Any]]:
+        connection = self.database.connect()
+        try:
+            return [
+                _source_dict(row) for row in BioJobRepository(connection).list_sources()
+            ]
+        finally:
+            connection.close()
+
+    def create_source(
+        self,
+        *,
+        name: str,
+        adapter_type: str,
+        config: Mapping[str, object],
+        actor: str,
+        enabled: bool = True,
+        description: str | None = None,
+    ) -> dict[str, Any]:
+        name = _require_nonempty_string("name", name)
+        adapter_type = _require_nonempty_string("adapter_type", adapter_type)
+        actor = _require_nonempty_string("actor", actor)
+        if not isinstance(enabled, bool):
+            raise DomainValidationError("enabled must be a boolean")
+        if adapter_type not in self.source_adapters:
+            raise DomainValidationError(f"unknown source adapter: {adapter_type}")
+        config_value = _validate_source_config(adapter_type, config)
+        description_value = _normalize_candidate_text("description", description)
+        source_id = str(uuid4())
+        created_at = _utc_now()
+        connection = self.database.connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            repository = BioJobRepository(connection)
+            repository.insert_source(
+                source_id=source_id,
+                name=name,
+                adapter_type=adapter_type,
+                enabled=enabled,
+                config_json=_serialize_json("config", config_value),
+                description=description_value,
+                created_at=created_at,
+            )
+            self._insert_audit(
+                repository,
+                action="source.created",
+                entity_id=source_id,
+                entity_type="source",
+                actor=actor,
+                metadata={"name": name, "adapter_type": adapter_type},
+                created_at=created_at,
+            )
+            row = repository.get_source(source_id)
+            if row is None:
+                raise RuntimeError("created source could not be read back")
+            result = _source_dict(row)
+            connection.execute("COMMIT")
+        except sqlite3.IntegrityError as exc:
+            _rollback(connection)
+            raise DomainConflictError(f"source already exists: {name}") from exc
+        except Exception:
+            _rollback(connection)
+            raise
+        finally:
+            connection.close()
+        return result
+
+    def update_source(
+        self,
+        source_id: str,
+        *,
+        actor: str,
+        name: str | None = None,
+        enabled: bool | None = None,
+        config: Mapping[str, object] | None = None,
+        description: str | None = None,
+    ) -> dict[str, Any]:
+        source_id = _require_nonempty_string("source_id", source_id)
+        actor = _require_nonempty_string("actor", actor)
+        fields = {
+            key
+            for key, value in {
+                "name": name,
+                "enabled": enabled,
+                "config": config,
+                "description": description,
+            }.items()
+            if value is not None
+        }
+        if not fields:
+            raise DomainValidationError("source update must include at least one field")
+        if enabled is not None and not isinstance(enabled, bool):
+            raise DomainValidationError("enabled must be a boolean")
+        connection = self.database.connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            repository = BioJobRepository(connection)
+            current_row = repository.get_source(source_id)
+            if current_row is None:
+                raise DomainNotFoundError(f"source not found: {source_id}")
+            current = _source_dict(current_row)
+            values: dict[str, str | int | None] = {}
+            if name is not None:
+                values["name"] = _require_nonempty_string("name", name)
+            if enabled is not None:
+                values["enabled"] = int(enabled)
+            if config is not None:
+                values["config_json"] = _serialize_json(
+                    "config", _validate_source_config(current["adapter_type"], config)
+                )
+            if description is not None:
+                values["description"] = _normalize_candidate_text(
+                    "description", description
+                )
+            updated_at = _utc_now()
+            repository.update_source(
+                source_id=source_id, values=values, updated_at=updated_at
+            )
+            self._insert_audit(
+                repository,
+                action="source.updated",
+                entity_id=source_id,
+                entity_type="source",
+                actor=actor,
+                metadata={"fields": sorted(fields)},
+                created_at=updated_at,
+            )
+            row = repository.get_source(source_id)
+            if row is None:
+                raise RuntimeError("updated source could not be read back")
+            result = _source_dict(row)
+            connection.execute("COMMIT")
+        except sqlite3.IntegrityError as exc:
+            _rollback(connection)
+            raise DomainConflictError(
+                "source update conflicts with existing data"
+            ) from exc
+        except Exception:
+            _rollback(connection)
+            raise
+        finally:
+            connection.close()
+        return result
+
+    def run_source(self, source_id: str, *, actor: str) -> dict[str, Any]:
+        from biojob.discovery import DiscoveryRunner
+
+        source_id = _require_nonempty_string("source_id", source_id)
+        actor = _require_nonempty_string("actor", actor)
+        connection = self.database.connect()
+        try:
+            row = BioJobRepository(connection).get_source(source_id)
+            if row is None:
+                raise DomainNotFoundError(f"source not found: {source_id}")
+            source = _source_dict(row)
+        finally:
+            connection.close()
+        if not source["enabled"]:
+            raise DomainConflictError(f"source is disabled: {source_id}")
+        if source["adapter_type"] not in self.source_adapters:
+            raise DomainValidationError(
+                f"unknown source adapter: {source['adapter_type']}"
+            )
+        run_id = DiscoveryRunner(self.database, self, self.source_adapters).run(
+            source, actor=actor
+        )
+        connection = self.database.connect()
+        try:
+            run = BioJobRepository(connection).get_source_run(run_id)
+            if run is None:
+                raise RuntimeError("completed source run could not be read back")
+            return _source_run_dict(run)
+        finally:
+            connection.close()
+
+    def run_enabled_sources(self, *, actor: str) -> list[dict[str, Any]]:
+        actor = _require_nonempty_string("actor", actor)
+        connection = self.database.connect()
+        try:
+            source_ids = [
+                row["id"]
+                for row in BioJobRepository(connection).list_sources(enabled_only=True)
+            ]
+        finally:
+            connection.close()
+        return [self.run_source(source_id, actor=actor) for source_id in source_ids]
+
+    def list_source_runs(self, *, source_id: str | None = None) -> list[dict[str, Any]]:
+        if source_id is not None:
+            source_id = _require_nonempty_string("source_id", source_id)
+        connection = self.database.connect()
+        try:
+            rows = BioJobRepository(connection).list_source_runs(source_id)
+            return [_source_run_dict(row) for row in rows]
+        finally:
+            connection.close()
 
     def ingest_candidate(
         self,
@@ -1022,6 +1269,110 @@ def _require_nonempty_string(name: str, value: Any) -> str:
     if not isinstance(value, str) or not value.strip():
         raise DomainValidationError(f"{name} must be a non-empty string")
     return value.strip()
+
+
+def _validate_source_config(
+    adapter_type: str, config: Mapping[str, object]
+) -> dict[str, str]:
+    if not isinstance(config, Mapping):
+        raise DomainValidationError("source config must be an object")
+    if not all(isinstance(key, str) for key in config):
+        raise DomainValidationError("source config keys must be strings")
+    allowed_by_adapter = {
+        "public_page": {"url", "company_name", "careers_url"},
+        "feed": {"url", "company_name", "careers_url"},
+        "manual": set(),
+    }
+    allowed = allowed_by_adapter.get(adapter_type, set())
+    unknown = set(config) - allowed
+    if unknown:
+        raise DomainValidationError(
+            f"unsupported source config field: {sorted(unknown)[0]}"
+        )
+    if adapter_type not in {"public_page", "feed", "manual"}:
+        if config:
+            raise DomainValidationError("custom source adapters require empty config")
+        return {}
+    if adapter_type == "manual":
+        return {}
+    url = _normalize_url("url", config.get("url"))
+    if url is None:
+        raise DomainValidationError("url must be a non-empty URL")
+    result = {"url": url}
+    company_name = _normalize_candidate_text("company_name", config.get("company_name"))
+    if company_name is not None:
+        result["company_name"] = company_name
+    careers_url = _normalize_url("careers_url", config.get("careers_url"))
+    if careers_url is not None:
+        result["careers_url"] = careers_url
+    return result
+
+
+def _source_dict(row: sqlite3.Row) -> dict[str, Any]:
+    result: dict[str, Any] = dict(row)
+    source_id = result["id"]
+    if not isinstance(source_id, str):
+        raise DomainDataCorruptionError("corrupt source entity: id is invalid")
+    config = _decode_json_field(
+        result.pop("config_json"),
+        table="sources",
+        entity_id=source_id,
+        field="config_json",
+    )
+    if not isinstance(config, dict) or not all(isinstance(key, str) for key in config):
+        raise DomainDataCorruptionError(
+            f"corrupt sources entity {source_id}: config_json must be an object"
+        )
+    adapter_type = result["adapter_type"]
+    if not isinstance(adapter_type, str) or not adapter_type:
+        raise DomainDataCorruptionError(
+            f"corrupt source entity {source_id}: adapter_type is invalid"
+        )
+    try:
+        config = _validate_source_config(adapter_type, config)
+    except DomainValidationError as exc:
+        raise DomainDataCorruptionError(
+            f"corrupt sources entity {source_id}: config_json is invalid"
+        ) from exc
+    if result["enabled"] not in {0, 1}:
+        raise DomainDataCorruptionError(
+            f"corrupt source entity {source_id}: enabled is invalid"
+        )
+    if result["health_status"] not in {"unknown", "healthy", "degraded", "failed"}:
+        raise DomainDataCorruptionError(
+            f"corrupt source entity {source_id}: health_status is invalid"
+        )
+    result["enabled"] = bool(result["enabled"])
+    result["config"] = config
+    return result
+
+
+def _source_run_dict(row: sqlite3.Row) -> dict[str, Any]:
+    result: dict[str, Any] = dict(row)
+    run_id = result["id"]
+    if not isinstance(run_id, str):
+        raise DomainDataCorruptionError("corrupt source run entity: id is invalid")
+    if result["status"] not in {"running", "completed", "failed", "cancelled"}:
+        raise DomainDataCorruptionError(
+            f"corrupt source_runs entity {run_id}: status is invalid"
+        )
+    cursor = _decode_json_field(
+        result.pop("cursor_json"),
+        table="source_runs",
+        entity_id=run_id,
+        field="cursor_json",
+    )
+    if not isinstance(cursor, dict):
+        raise DomainDataCorruptionError(
+            f"corrupt source_runs entity {run_id}: cursor_json must be an object"
+        )
+    result_count = result["result_count"]
+    if not isinstance(result_count, int) or result_count < 0:
+        raise DomainDataCorruptionError(
+            f"corrupt source_runs entity {run_id}: result_count is invalid"
+        )
+    result["cursor"] = cursor
+    return result
 
 
 def _normalize_optional_string(name: str, value: Any) -> str | None:
