@@ -45,7 +45,7 @@ Phase 1 does not fetch websites, call an LLM, import a resume, generate Excel, o
 - Modify: `pyproject.toml:415-416`
 - Test: `tests/biojob/test_database.py`
 
-- [ ] **Step 1: Write failing database tests**
+- [x] **Step 1: Write failing database tests**
 
 Create tests that require the database path to follow the active `HERMES_HOME`, create every designed table, enable foreign keys, use WAL, and apply migration 1 exactly once:
 
@@ -85,7 +85,7 @@ def test_initialize_creates_schema_and_pragmas(tmp_path):
         assert conn.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == 1
 ```
 
-- [ ] **Step 2: Run the file and verify RED**
+- [x] **Step 2: Run the file and verify RED**
 
 Run:
 
@@ -95,7 +95,7 @@ Run:
 
 Expected: FAIL because the `biojob` package does not exist.
 
-- [ ] **Step 3: Implement the path, schema, and migration runner**
+- [x] **Step 3: Implement the path, schema, and migration runner**
 
 Implement these public interfaces:
 
@@ -253,7 +253,7 @@ No credential column is permitted. `BioJobDatabase.connect()` sets `row_factory=
 
 Add `biojob` and `biojob.*` to `[tool.setuptools.packages.find].include`.
 
-- [ ] **Step 4: Verify GREEN and commit**
+- [x] **Step 4: Verify GREEN and commit**
 
 Run the same test file, then:
 
@@ -272,7 +272,7 @@ Expected: database tests pass and the commit contains only Task 1 files.
 - Create: `biojob/service.py`
 - Test: `tests/biojob/test_profile_facts.py`
 
-- [ ] **Step 1: Write failing personal-fact tests**
+- [x] **Step 1: Write failing personal-fact tests**
 
 Cover creation as pending, explicit confirmation, visibility filtering, uniqueness, and audit rows:
 
@@ -307,11 +307,11 @@ def test_confirmed_fact_is_visible_and_audited(service):
 
 Also assert that `private` facts never appear in matching/resume queries, invalid status/visibility raises `DomainValidationError`, and a duplicate `(category, fact_key)` becomes a domain conflict rather than a raw SQLite traceback.
 
-- [ ] **Step 2: Run the file and verify RED**
+- [x] **Step 2: Run the file and verify RED**
 
 Run through `scripts/run_tests.sh`; expected failure is the missing `BioJobService` behavior.
 
-- [ ] **Step 3: Implement minimal fact behavior**
+- [x] **Step 3: Implement minimal fact behavior**
 
 Define string enums and errors in `biojob/domain.py`:
 
@@ -340,7 +340,7 @@ class DomainNotFoundError(LookupError):
 
 `BioJobRepository` owns parameterized SQL only. `BioJobService` owns UUID generation, UTC timestamps, JSON serialization, transactions, and audit insertion. `list_usable_facts("resume")` returns only `confirmed` facts with `resume` or `both`; matching uses `matching` or `both`.
 
-- [ ] **Step 4: Verify GREEN and commit**
+- [x] **Step 4: Verify GREEN and commit**
 
 Run Task 1 and Task 2 test files, then commit as `feat(biojob): add confirmed profile fact master`.
 
@@ -352,7 +352,7 @@ Run Task 1 and Task 2 test files, then commit as `feat(biojob): add confirmed pr
 - Modify: `biojob/service.py`
 - Test: `tests/biojob/test_applications.py`
 
-- [ ] **Step 1: Write failing state-machine tests**
+- [x] **Step 1: Write failing state-machine tests**
 
 Use a real temporary SQLite database. Require a new job to receive one `considering` application, keep all three jump links, reject illegal backward/terminal transitions, set `applied_at` only on the first move to `applied`, and append both an application event and audit row:
 
@@ -384,11 +384,11 @@ def test_application_transition_is_audited(service, job):
     ]
 ```
 
-- [ ] **Step 2: Run and verify RED**
+- [x] **Step 2: Run and verify RED**
 
 Expected: missing job/application methods.
 
-- [ ] **Step 3: Implement the transition graph and service operations**
+- [x] **Step 3: Implement the transition graph and service operations**
 
 Use this exact forward-only graph:
 
@@ -405,7 +405,7 @@ APPLICATION_TRANSITIONS = {
 
 `create_job()` upserts the company by canonical name, validates optional URLs to `http` or `https`, inserts the job and initial application/event in one transaction, and audits `job.created`. `transition_application()` locks with `BEGIN IMMEDIATE`, validates the graph, updates the application, appends an event, and writes `application.status_changed`. No method infers that an application was submitted.
 
-- [ ] **Step 4: Verify GREEN and commit**
+- [x] **Step 4: Verify GREEN and commit**
 
 Run all `tests/biojob` files and commit as `feat(biojob): add auditable application workflow`.
 
@@ -417,7 +417,7 @@ Run all `tests/biojob` files and commit as `feat(biojob): add auditable applicat
 - Modify: `hermes_cli/web_server.py`
 - Test: `tests/biojob/test_api.py`
 
-- [ ] **Step 1: Write failing API contract tests**
+- [x] **Step 1: Write failing API contract tests**
 
 Mount the router on a small FastAPI app with `HERMES_HOME=tmp_path`. Cover:
 
@@ -447,11 +447,11 @@ def test_dashboard_counts_application_states(client):
 
 Also cover profile fact create/confirm, `404` for missing entities, `409` for duplicate facts or illegal transitions, `422` for invalid URLs/input, job patching of notes/follow-up/status, and soft-delete exclusion.
 
-- [ ] **Step 2: Run and verify RED**
+- [x] **Step 2: Run and verify RED**
 
 Expected: router import or route lookup failure.
 
-- [ ] **Step 3: Implement models and thin async handlers**
+- [x] **Step 3: Implement models and thin async handlers**
 
 Provide these routes:
 
@@ -477,11 +477,11 @@ from hermes_cli.web_routers import biojob as _biojob_routes
 app.include_router(_biojob_routes.router)
 ```
 
-- [ ] **Step 4: Verify GREEN and dashboard integration**
+- [x] **Step 4: Verify GREEN and dashboard integration**
 
 Run `tests/biojob/test_api.py` and one existing dashboard-auth test file to confirm `/api/biojob/*` remains protected by the existing auth middleware when mounted on the real app.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 Commit as `feat(biojob): expose local data core API`.
 
@@ -491,7 +491,7 @@ Commit as `feat(biojob): expose local data core API`.
 - Modify: `docs/baseline/hermes-windows-baseline.md`
 - Modify: `docs/superpowers/plans/2026-08-11-biojob-data-core.md`
 
-- [ ] **Step 1: Run the complete BioJob suite**
+- [x] **Step 1: Run the complete BioJob suite**
 
 ```powershell
 & 'C:\Program Files\Git\bin\bash.exe' scripts/run_tests.sh -j 4 tests/biojob -q
@@ -499,15 +499,15 @@ Commit as `feat(biojob): expose local data core API`.
 
 Expected: all BioJob files pass with no failures.
 
-- [ ] **Step 2: Run installation, packaging, and targeted upstream gates**
+- [x] **Step 2: Run installation, packaging, and targeted upstream gates**
 
 Run the nine Windows regression files recorded in the baseline, `npm --prefix apps/desktop run build`, and `powershell.exe -File scripts/baseline/check-capabilities.ps1`. Confirm `python -c "import biojob"` works from the synced `.venv` after `uv sync --locked`.
 
-- [ ] **Step 3: Inspect the created SQLite schema for secret-shaped columns**
+- [x] **Step 3: Inspect the created SQLite schema for secret-shaped columns**
 
 Create a temporary database, query `pragma_table_info` for every table, and fail if a column name contains `api_key`, `token`, `cookie`, `password`, or `secret`.
 
-- [ ] **Step 4: Update the baseline report and plan checkboxes**
+- [x] **Step 4: Update the baseline report and plan checkboxes**
 
 Append exact commands and counts under a `Phase 1 data core` section. Preserve the existing upstream-test exceptions and do not change their status to passing.
 

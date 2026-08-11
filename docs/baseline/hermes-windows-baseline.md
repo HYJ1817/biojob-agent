@@ -50,3 +50,84 @@ These failures are recorded as upstream baseline debt. They are not represented 
 ## Baseline boundary
 
 No BioJob domain feature is implemented in this baseline. No paid model request, recruitment-site login, auto-application action, or API credential was required. The next implementation phase may add BioJob code only inside the domain boundaries documented in `UPSTREAM_HERMES.md`.
+
+## Phase 1 data core
+
+- Checked at: 2026-08-11
+- Product branch: `biojob-main`
+- Verified product commit: `285421a6db77a6d52b2da64b264156db6c4c0ec0`
+
+| Area | Exact command | Result |
+|---|---|---|
+| Complete BioJob suite | `& 'C:\Program Files\Git\bin\bash.exe' scripts/run_tests.sh -j 4 tests/biojob -q` | PASS (exit 0) — 4 files, 200 passed, 0 failed |
+| Nine retained Windows regressions | `& 'C:\Program Files\Git\bin\bash.exe' scripts/run_tests.sh -j 4 tests/acp/test_ping_suppression.py tests/acp_adapter/test_acp_images.py tests/agent/lsp/test_install_and_lint_fixes.py tests/agent/lsp/test_workspace.py tests/agent/test_codex_app_server_persist.py tests/agent/test_compression_review_76354.py tests/agent/test_file_safety_sandbox_mirror.py tests/agent/test_image_routing.py tests/agent/test_proxy_and_url_validation.py -q` | PASS (exit 0) — 9 files, 90 passed, 0 failed, 1 skipped |
+| Hermes desktop build | `npm --prefix apps/desktop run build` | PASS (exit 0) — 14,970 modules transformed; renderer and Electron bundles produced; npm/Vite emitted non-fatal configuration/deprecation warnings |
+| Windows capabilities | `powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/baseline/check-capabilities.ps1` | PASS (exit 0) — 6 of 6 checks passed; 79 skills found |
+| Locked default environment sync | `uv sync --locked` | PASS (exit 0) — 249 packages resolved; local `hermes-agent` built; 91 packages removed and 1 installed to match the default lock selection; `uv.lock` unchanged |
+| Installed-package import | `& .\.venv\Scripts\python.exe -c "import biojob; print(biojob.__file__)"` | PASS (exit 0) — `C:\A\biojob-agent\biojob\__init__.py` |
+| Restore locked test extra | `uv sync --locked --extra dev` | PASS (exit 0) — 17 packages installed; `uv.lock` unchanged |
+| BioJob API plus real dashboard auth | `& 'C:\Program Files\Git\bin\bash.exe' scripts/run_tests.sh -j 1 tests/biojob/test_api.py tests/hermes_cli/test_dashboard_auth_middleware.py -q` | PASS on the final run (exit 0) — 2 files, 69 passed, 0 failed |
+| Independent schema credential-column audit | PowerShell here-string encoded to Base64, then executed with `& .\.venv\Scripts\python.exe -c "import base64; exec(base64.b64decode('$encodedBiojobSchemaCheck'))"` | PASS on the corrected run (exit 0) — 16 tables inspected, 0 credential-shaped columns, explicit connection close, temporary directory removed |
+
+The exact readable source and PowerShell wrapper used for the successful schema audit were:
+
+```powershell
+$biojobSchemaCheck = @'
+import os
+import tempfile
+from pathlib import Path
+
+from biojob.database import BioJobDatabase
+
+needles = ("api_key", "token", "cookie", "password", "secret")
+with tempfile.TemporaryDirectory() as temp_dir:
+    temp_path = Path(temp_dir)
+    os.environ["HERMES_HOME"] = temp_dir
+    db = BioJobDatabase(temp_path / "biojob" / "biojob.db")
+    db.initialize()
+    conn = db.connect()
+    try:
+        tables = [row[0] for row in conn.execute(
+            "SELECT name FROM sqlite_schema WHERE type = 'table' ORDER BY name"
+        )]
+        flagged = []
+        for table in tables:
+            for row in conn.execute(
+                "SELECT name FROM pragma_table_info(?)", (table,)
+            ):
+                column = row[0]
+                if any(needle in column.lower() for needle in needles):
+                    flagged.append(f"{table}.{column}")
+        print(f"TABLE_COUNT={len(tables)}")
+        print("TABLES=" + ",".join(tables))
+        print("FLAGGED=" + (",".join(flagged) if flagged else "none"))
+        if flagged:
+            raise SystemExit(1)
+    finally:
+        conn.close()
+    print("SCHEMA_CREDENTIAL_COLUMNS=PASS")
+if temp_path.exists():
+    raise SystemExit("temporary directory was not cleaned")
+print("TEMP_DIRECTORY_CLEANUP=PASS")
+'@
+$encodedBiojobSchemaCheck = [Convert]::ToBase64String(
+    [Text.Encoding]::UTF8.GetBytes($biojobSchemaCheck)
+)
+& .\.venv\Scripts\python.exe -c "import base64; exec(base64.b64decode('$encodedBiojobSchemaCheck'))"
+```
+
+Two preliminary schema-audit invocations failed operationally and are not hidden: the first exited 1 with a `SyntaxError` after PowerShell stripped quotes from a directly passed here-string; the second completed the 16-table scan with no flagged columns but exited 1 because the audit used the SQLite transaction context manager without explicitly closing the connection, so Windows could not remove the temporary database. The corrected invocation above explicitly closed the connection and passed cleanup. The failed attempt's dedicated temporary directory was verified to be under the operating-system temp root and removed after the process released its handle.
+
+The first API-plus-auth invocation after the required default `uv sync --locked` also exited 1 before test collection because that default sync removed the optional pytest packages. After `uv sync --locked --extra dev` restored the repository's locked `dev` extra, the same required test-wrapper command passed all 69 tests. This was an environment-selection failure, not a test failure.
+
+### Delivered boundary
+
+Migration 1 creates 16 tables: `schema_migrations` plus 15 BioJob domain tables. The data core stores profile facts with explicit confirmation and visibility rules, and only confirmed facts are exposed to matching or resume consumers. Jobs retain three independently clickable URLs for the detail page, application page, and employer careers page. Applications use an auditable forward-only state machine with append-only application events and mutation audit records; no transition infers that an application was submitted.
+
+The local router exposes 10 `/api/biojob` endpoints for dashboard counts, profile facts, jobs, preparation, and events. When mounted on the real Hermes dashboard, those routes remain behind the existing dashboard authentication middleware. The schema audit confirmed that no column name contains `api_key`, `token`, `cookie`, `password`, or `secret`.
+
+Phase 1 does not include job fetching, job matching, resume generation, Excel output, a BioJob GUI, automatic application submission, or credential storage.
+
+### Retained upstream exceptions
+
+The focused Phase 1 gates do not supersede or repair the existing upstream baseline exceptions. The complete Hermes Python suite remains **NOT CLEAN** at the recorded baseline (stopped at 34.1% after 9,669 passes and 85 failures), and the Electron unit suite remains **NOT CLEAN** at the recorded baseline (982 passed, 20 failed, 2 skipped, with 2 suites unable to load). Nothing in this Phase 1 appendix represents those complete upstream suites as passing.
