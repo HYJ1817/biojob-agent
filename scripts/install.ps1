@@ -2118,15 +2118,15 @@ function Install-Repository {
 
                 Push-Location $InstallDir
                 $archiveLocationPushed = $true
-                git -c windows.appendAtomically=false init 2>$null
+                Invoke-NativeWithRelaxedErrorAction { git -c windows.appendAtomically=false init 2>$null | Out-Null }
                 if ($LASTEXITCODE -ne 0) { throw "Could not initialize bundled repository" }
-                git -c windows.appendAtomically=false config core.autocrlf false 2>$null
+                Invoke-NativeWithRelaxedErrorAction { git -c windows.appendAtomically=false config core.autocrlf false 2>$null }
                 if ($LASTEXITCODE -ne 0) { throw "Could not configure bundled repository" }
-                git -c windows.appendAtomically=false add -A 2>$null
+                Invoke-NativeWithRelaxedErrorAction { git -c windows.appendAtomically=false add -A 2>$null }
                 if ($LASTEXITCODE -ne 0) { throw "Could not stage bundled repository" }
-                git -c user.name="BioJob Installer" -c user.email="installer@biojob.local" commit -m "BioJob packaged source" 2>$null
+                Invoke-NativeWithRelaxedErrorAction { git -c user.name="BioJob Installer" -c user.email="installer@biojob.local" commit -m "BioJob packaged source" 2>$null | Out-Null }
                 if ($LASTEXITCODE -ne 0) { throw "Could not commit bundled repository" }
-                git -c windows.appendAtomically=false branch -M $Branch 2>$null
+                Invoke-NativeWithRelaxedErrorAction { git -c windows.appendAtomically=false branch -M $Branch 2>$null }
                 if ($LASTEXITCODE -ne 0) { throw "Could not name bundled repository branch" }
                 $cloneSuccess = $true
                 Write-Success "Bundled repository payload installed"
