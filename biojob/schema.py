@@ -212,4 +212,19 @@ MIGRATIONS: Sequence[tuple[int, str]] = (
             ON audit_log(entity_id, created_at);
         """,
     ),
+    (
+        2,
+        """
+        ALTER TABLE sources
+            ADD COLUMN config_json TEXT NOT NULL DEFAULT '{}';
+        ALTER TABLE sources
+            ADD COLUMN description TEXT;
+        ALTER TABLE jobs
+            ADD COLUMN dedup_key TEXT;
+
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_active_dedup_key
+            ON jobs(dedup_key)
+            WHERE dedup_key IS NOT NULL AND deleted_at IS NULL;
+        """,
+    ),
 )

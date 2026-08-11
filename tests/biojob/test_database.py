@@ -54,6 +54,8 @@ EXPECTED_COLUMNS = {
         "last_checked_at",
         "created_at",
         "updated_at",
+        "config_json",
+        "description",
     },
     "source_runs": {
         "id",
@@ -85,6 +87,7 @@ EXPECTED_COLUMNS = {
         "created_at",
         "updated_at",
         "deleted_at",
+        "dedup_key",
     },
     "job_sources": {
         "id",
@@ -179,6 +182,7 @@ EXPECTED_INDEXES = {
     "idx_candidate_decisions_job_created",
     "idx_job_matches_job_created",
     "idx_source_runs_source_started",
+    "idx_jobs_active_dedup_key",
 }
 
 
@@ -212,7 +216,9 @@ def test_initialize_creates_complete_schema_and_connection_pragmas(tmp_path):
         }
         assert tables == set(EXPECTED_COLUMNS)
         for table, expected_columns in EXPECTED_COLUMNS.items():
-            columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+            columns = {
+                row["name"] for row in conn.execute(f"PRAGMA table_info({table})")
+            }
             assert columns == expected_columns
 
         assert conn.row_factory is sqlite3.Row
@@ -270,7 +276,7 @@ def test_connect_retries_a_transient_wal_setup_lock(tmp_path, monkeypatch):
     assert attempts == 2
 
 
-def test_initialize_applies_migration_one_exactly_once(tmp_path):
+def test_initialize_applies_each_migration_exactly_once(tmp_path):
     db = BioJobDatabase(tmp_path / "biojob.db")
 
     db.initialize()
@@ -285,8 +291,8 @@ def test_initialize_applies_migration_one_exactly_once(tmp_path):
             "SELECT version, applied_at FROM schema_migrations"
         ).fetchall()
 
-    assert [tuple(row) for row in original] == [(1, original[0]["applied_at"])]
-    assert [tuple(row) for row in reapplied] == [tuple(original[0])]
+    assert [row["version"] for row in original] == [1, 2]
+    assert [tuple(row) for row in reapplied] == [tuple(row) for row in original]
 
 
 def test_concurrent_initialize_applies_each_migration_once(tmp_path):
@@ -304,10 +310,9 @@ def test_concurrent_initialize_applies_each_migration_once(tmp_path):
     assert initialized_paths == [path] * worker_count
     with closing(BioJobDatabase(path).connect()) as conn:
         versions = conn.execute(
-            "SELECT version, COUNT(*) AS count "
-            "FROM schema_migrations GROUP BY version"
+            "SELECT version, COUNT(*) AS count FROM schema_migrations GROUP BY version"
         ).fetchall()
-    assert [tuple(row) for row in versions] == [(1, 1)]
+    assert [tuple(row) for row in versions] == [(1, 1), (2, 1)]
 
 
 def test_failed_migration_rolls_back_every_statement_and_can_retry(
@@ -318,7 +323,7 @@ def test_failed_migration_rolls_back_every_statement_and_can_retry(
     db = BioJobDatabase(path)
     broken_migrations = MIGRATIONS + (
         (
-            2,
+            3,
             """
             CREATE TABLE migration_probe (id TEXT PRIMARY KEY);
             INSERT INTO migration_probe(id) VALUES ('before-failure');
@@ -347,7 +352,7 @@ def test_failed_migration_rolls_back_every_statement_and_can_retry(
         versions = conn.execute(
             "SELECT version FROM schema_migrations ORDER BY version"
         ).fetchall()
-    assert [tuple(row) for row in versions] == [(1,)]
+    assert [tuple(row) for row in versions] == [(1,), (2,)]
 
 
 def test_rollback_failure_does_not_hide_the_migration_error(tmp_path, monkeypatch):
@@ -406,9 +411,7 @@ def test_audit_log_index_supports_entity_history_queries(tmp_path):
     with closing(db.connect()) as conn:
         indexed_columns = [
             row["name"]
-            for row in conn.execute(
-                "PRAGMA index_info(idx_audit_log_entity_created)"
-            )
+            for row in conn.execute("PRAGMA index_info(idx_audit_log_entity_created)")
         ]
         plan_details = [
             row["detail"]
