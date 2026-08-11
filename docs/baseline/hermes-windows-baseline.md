@@ -133,3 +133,110 @@ Phase 1 does not include job fetching, job matching, resume generation, Excel ou
 ### Retained upstream exceptions
 
 The focused Phase 1 gates do not supersede or repair the existing upstream baseline exceptions. The complete Hermes Python suite remains **NOT CLEAN** at the recorded baseline (stopped at 34.1% after 9,669 passes and 85 failures), and the Electron unit suite remains **NOT CLEAN** at the recorded baseline (982 passed, 20 failed, 2 skipped, with 2 suites unable to load). Nothing in this Phase 1 appendix represents those complete upstream suites as passing.
+
+## Phase 2 discovery and candidate pool
+
+- Checked at: 2026-08-12
+- Product branch: `biojob-main`
+- Verified product commit: `9040b274d8dd`
+- Hermes pinned commit remains: `c0106e50e7ecedb3ce34e785d949725dc4e0e457`
+
+| Area | Exact command | Result |
+|---|---|---|
+| Complete BioJob suite | `& 'C:\Program Files\Git\bin\bash.exe' scripts/run_tests.sh -j 4 tests/biojob -q` | PASS (exit 0) — 9 files, 274 passed, 0 failed |
+| BioJob plus real dashboard auth | `& 'C:\Program Files\Git\bin\bash.exe' scripts/run_tests.sh -j 4 tests/biojob tests/hermes_cli/test_dashboard_auth_middleware.py -q` | PASS (exit 0) — 10 files, 288 passed, 0 failed |
+| Nine retained Windows regressions | `& 'C:\Program Files\Git\bin\bash.exe' scripts/run_tests.sh -j 4 tests/acp/test_ping_suppression.py tests/acp_adapter/test_acp_images.py tests/agent/lsp/test_install_and_lint_fixes.py tests/agent/lsp/test_workspace.py tests/agent/test_codex_app_server_persist.py tests/agent/test_compression_review_76354.py tests/agent/test_file_safety_sandbox_mirror.py tests/agent/test_image_routing.py tests/agent/test_proxy_and_url_validation.py -q` | PASS (exit 0) — 9 files, 90 passed, 0 failed, 1 skipped |
+| Hermes desktop build | `npm --prefix apps/desktop run build` | PASS (exit 0) — 14,970 modules transformed; renderer and Electron bundles produced; only the previously observed non-fatal npm/Vite warnings were emitted |
+| Windows capabilities | `powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/baseline/check-capabilities.ps1` | PASS (exit 0) — 6 of 6 checks passed; 79 skills found |
+| Phase 2 lint | `& .\.venv\Scripts\ruff.exe check biojob hermes_cli/web_routers/biojob.py tests/biojob` | PASS (exit 0) |
+| Phase 2 type check | `& .\.venv\Scripts\ty.exe check biojob hermes_cli/web_routers/biojob.py` | PASS (exit 0) |
+| Schema and source-config credential audit | UTF-8 PowerShell here-string encoded to Base64 and executed with `& .\.venv\Scripts\python.exe -c "import base64; exec(base64.b64decode('$biojobPhase2Encoded'))"` | PASS (exit 0) — 16 tables, 6 default source configs, 0 credential-shaped columns, 0 credential-shaped config keys, temporary directory removed |
+| Pinned upstream ancestry | `git merge-base --is-ancestor c0106e50e7ecedb3ce34e785d949725dc4e0e457 HEAD` | PASS (exit 0) |
+
+The schema/config audit used the same Base64 wrapper pattern as Phase 1. Its readable Python source was:
+
+```python
+import json
+import os
+import tempfile
+from pathlib import Path
+
+from biojob.database import BioJobDatabase
+from biojob.service import BioJobService
+
+needles = ("api_key", "token", "cookie", "password", "secret", "authorization", "proxy")
+with tempfile.TemporaryDirectory() as temp_dir:
+    temp_path = Path(temp_dir)
+    os.environ["HERMES_HOME"] = temp_dir
+    db = BioJobDatabase(temp_path / "biojob" / "biojob.db")
+    db.initialize()
+    BioJobService(db).ensure_default_sources()
+    conn = db.connect()
+    try:
+        tables = [row[0] for row in conn.execute(
+            "SELECT name FROM sqlite_schema WHERE type = 'table' ORDER BY name"
+        )]
+        flagged_columns = []
+        for table in tables:
+            for row in conn.execute("SELECT name FROM pragma_table_info(?)", (table,)):
+                column = row[0]
+                if any(needle in column.lower() for needle in needles):
+                    flagged_columns.append(f"{table}.{column}")
+        flagged_keys = []
+        configs = conn.execute("SELECT id, config_json FROM sources ORDER BY id").fetchall()
+        for source_id, raw_config in configs:
+            config = json.loads(raw_config)
+            stack = [config]
+            while stack:
+                value = stack.pop()
+                if isinstance(value, dict):
+                    for key, child in value.items():
+                        if any(needle in key.lower() for needle in needles):
+                            flagged_keys.append(f"{source_id}.{key}")
+                        stack.append(child)
+                elif isinstance(value, list):
+                    stack.extend(value)
+        print(f"TABLE_COUNT={len(tables)}")
+        print(f"SOURCE_CONFIG_COUNT={len(configs)}")
+        print("FLAGGED_COLUMNS=" + (",".join(flagged_columns) if flagged_columns else "none"))
+        print("FLAGGED_CONFIG_KEYS=" + (",".join(flagged_keys) if flagged_keys else "none"))
+        if flagged_columns or flagged_keys:
+            raise SystemExit(1)
+    finally:
+        conn.close()
+if temp_path.exists():
+    raise SystemExit("temporary directory was not cleaned")
+```
+
+### Live public-source smoke test
+
+The five enabled official landing sources were run concurrently against a temporary `HERMES_HOME`. The experimental public-search RSS source remained disabled. No login, CAPTCHA handling, browser impersonation, anti-bot bypass, or application action was attempted.
+
+The smoke runner called `BioJobService.ensure_default_sources()`, submitted one `run_source()` call per enabled source through a five-worker `ThreadPoolExecutor`, printed every run's name/status/result count/error, then printed final source health, run count, and candidate count. It ran entirely under `TemporaryDirectory`; after all database connections closed, it asserted that the directory had been removed.
+
+| Source | Run status | Candidates | Recorded reason / health |
+|---|---:|---:|---|
+| 齐鲁制药招聘 | failed | 0 | `source hostname must resolve only to public addresses`; health `failed` |
+| 荣昌生物招聘 | failed | 0 | same security rejection; health `failed` |
+| 绿叶制药招聘 | failed | 0 | same security rejection; health `failed` |
+| 华熙生物招聘 | failed | 0 | same security rejection; health `failed` |
+| 康龙化成校园招聘 | failed | 0 | same security rejection; health `failed` |
+
+This was an environment-specific, fail-closed result rather than a hidden success: the verification host resolved the five domains into `198.18.0.0/15` (`198.18.0.209`, `.212`, `.214`, `198.18.1.38`, and `.26`). That range is reserved for benchmarking and is intentionally rejected by `SafeHttpClient` as non-public. All five failures were persisted as separate runs, the process exited successfully, the candidate count remained zero, and the temporary directory was removed. The client did not relax SSRF protection to accommodate the test environment.
+
+### Delivered boundary
+
+Phase 2 adds three ordered migrations while retaining 16 tables. It provides:
+
+- manual URL/JD import with no provider key or internet requirement;
+- five editable official employer landing sources plus one disabled experimental feed;
+- bounded public-page and RSS/Atom adapters with 15-second timeout, five-redirect limit, 2 MiB response limit, public-address validation, and XML entity/DTD rejection;
+- isolated source runs, health and history, immutable snapshots, cross-source link attribution, deterministic undergraduate-oriented screening evidence, and explicit candidate decisions;
+- a pending candidate pool that creates no `applications` row until the user selects `kept`;
+- nine authenticated local discovery routes for candidates, manual import, source management, and run history, bringing the BioJob router to 19 routes in total.
+
+Phase 2 still does **not** log in to recruitment sites, bypass anti-bot controls, call a paid model, generate or rewrite a resume, export Excel, create a dedicated BioJob GUI, or submit an application. “保留岗位” only creates a local `considering` record; it never represents an external submission.
+
+### Retained upstream exceptions
+
+The Phase 2 gates do not supersede the recorded upstream exceptions. The complete Hermes Python and Electron suites remain **NOT CLEAN** at the Phase 0 baseline. Phase 2 was accepted only against the complete BioJob suite, real auth regression, retained Windows regression set, desktop build, capability check, and security audits listed above.

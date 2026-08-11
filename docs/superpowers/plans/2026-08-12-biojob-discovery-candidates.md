@@ -29,7 +29,7 @@ Phase 2 does not automate login, bypass anti-bot controls, submit applications, 
 - Modify: `biojob/schema.py`
 - Test: `tests/biojob/test_discovery_database.py`
 
-- [ ] **Step 1: Write failing migration tests**
+- [x] **Step 1: Write failing migration tests**
 
 Create a version-1 database by executing only migration 1, then initialize with current migrations. Assert migration 2 is applied once, existing rows survive, and the following additions exist:
 
@@ -41,7 +41,7 @@ jobs.dedup_key TEXT
 
 Assert a partial unique index named `idx_jobs_active_dedup_key` enforces one non-deleted job per non-null `dedup_key`, while soft-deleted historical rows do not block a replacement.
 
-- [ ] **Step 2: Run the test and verify RED**
+- [x] **Step 2: Run the test and verify RED**
 
 Run:
 
@@ -51,15 +51,15 @@ Run:
 
 Expected: failure because migration 2 and the new columns do not exist.
 
-- [ ] **Step 3: Implement migration 2**
+- [x] **Step 3: Implement migration 2**
 
 Append `(2, sql)` to `MIGRATIONS`. Use `ALTER TABLE` only for the new nullable/defaulted columns and create the partial unique index. Do not rewrite migration 1.
 
-- [ ] **Step 4: Verify GREEN and regressions**
+- [x] **Step 4: Verify GREEN and regressions**
 
 Run the new file plus `tests/biojob/test_database.py`.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 Commit as `feat(biojob): migrate discovery source metadata`.
 
@@ -71,7 +71,7 @@ Commit as `feat(biojob): migrate discovery source metadata`.
 - Modify: `biojob/service.py`
 - Test: `tests/biojob/test_candidates.py`
 
-- [ ] **Step 1: Write failing candidate lifecycle tests**
+- [x] **Step 1: Write failing candidate lifecycle tests**
 
 Use a real temporary database. Require `ingest_candidate()` to create or merge a job without creating an `applications` row, attach a source link and snapshot, insert a deterministic `job_matches` row, and record a latest `candidate_decisions.decision='pending'` row.
 
@@ -87,11 +87,11 @@ service.decide_candidate(job_id, "ignored", actor="user", note="学历不符")
 
 `kept` creates the initial `considering` application and event exactly once in the same transaction. `ignored`, `later`, and `error` do not create an application. Repeating the same terminal decision is a conflict; a user may move `later` back to `pending` through an explicit new decision.
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 Run `tests/biojob/test_candidates.py`; expected failure is missing candidate methods/types.
 
-- [ ] **Step 3: Implement normalization, matching, and deduplication**
+- [x] **Step 3: Implement normalization, matching, and deduplication**
 
 Add focused domain types:
 
@@ -124,11 +124,11 @@ The deterministic screener returns score 0–100 plus JSON evidence. Positive te
 
 All job/source/snapshot/match/decision/audit mutations share one `BEGIN IMMEDIATE` transaction. A repeated source snapshot with the same content hash is idempotent. Cross-source duplicates merge into one job and retain separate `job_sources` rows.
 
-- [ ] **Step 4: Cover corruption and concurrency**
+- [x] **Step 4: Cover corruption and concurrency**
 
 Add tests for source-level duplicate refresh, cross-source merge, changed JD snapshot creation, concurrent duplicate ingestion, kept decision atomicity, illegal repeat decisions, soft-deleted replacements, and malformed persisted decision/match JSON failing closed with `DomainDataCorruptionError`.
 
-- [ ] **Step 5: Verify and commit**
+- [x] **Step 5: Verify and commit**
 
 Run all Task 1–2 tests and existing BioJob tests. Commit as `feat(biojob): add reviewable candidate lifecycle`.
 
@@ -143,7 +143,7 @@ Run all Task 1–2 tests and existing BioJob tests. Commit as `feat(biojob): add
 - Create: `biojob/sources/feed.py`
 - Test: `tests/biojob/test_sources.py`
 
-- [ ] **Step 1: Write failing adapter contract tests**
+- [x] **Step 1: Write failing adapter contract tests**
 
 Define a synchronous adapter protocol because source runs execute in worker threads:
 
@@ -155,17 +155,17 @@ class JobSourceAdapter(Protocol):
 
 Tests use an injected `httpx.MockTransport`; no test calls the public internet.
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 Expected: imports fail because `biojob.sources` does not exist.
 
-- [ ] **Step 3: Implement bounded HTTP and manual adapters**
+- [x] **Step 3: Implement bounded HTTP and manual adapters**
 
 `SafeHttpClient` must permit only `http`/`https`, reject userinfo and local/private/link-local destinations after DNS resolution, use a 15-second timeout, cap redirects at 5, cap response bodies at 2 MiB, and send an honest BioJob user agent. Redirect targets are revalidated. Tests cover loopback IPv4/IPv6, DNS rebinding through injected resolver, oversized bodies, redirects, timeouts, and content types.
 
 `ManualJobAdapter` accepts already supplied structured data and performs no network request.
 
-- [ ] **Step 4: Implement public-page parsing**
+- [x] **Step 4: Implement public-page parsing**
 
 `PublicPageAdapter` may create candidates only from:
 
@@ -174,11 +174,11 @@ Expected: imports fail because `biojob.sources` does not exist.
 
 It must strip scripts/styles, cap extracted text, resolve relative URLs against the validated final URL, reject `javascript:` links, and never treat a generic landing-page paragraph as a job. JSON-LD fields map title, organization, location, description, dates, and application URL into `RawJob`.
 
-- [ ] **Step 5: Implement feed parsing**
+- [x] **Step 5: Implement feed parsing**
 
 `FeedJobAdapter` accepts RSS 2.0 or Atom under a 2 MiB limit. Reject `DOCTYPE` and `ENTITY` before parsing. Each item/entry needs a title and validated absolute link. Description is treated as untrusted JD/snippet text with tags removed and a 50,000-character cap.
 
-- [ ] **Step 6: Verify and commit**
+- [x] **Step 6: Verify and commit**
 
 Run `tests/biojob/test_sources.py` and all previous Phase 2 files. Commit as `feat(biojob): add bounded job source adapters`.
 
@@ -191,7 +191,7 @@ Run `tests/biojob/test_sources.py` and all previous Phase 2 files. Commit as `fe
 - Modify: `biojob/service.py`
 - Test: `tests/biojob/test_discovery_runs.py`
 
-- [ ] **Step 1: Write failing source/run tests**
+- [x] **Step 1: Write failing source/run tests**
 
 Required service contracts:
 
@@ -219,21 +219,21 @@ DEFAULT_SOURCES = (
 
 The catalog records that dynamic/WAF-protected landing pages may return zero or fail without making the overall run fail. Defaults are upserted by stable names and never overwrite a user's enabled/config changes.
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 Expected: missing catalog and run orchestration.
 
-- [ ] **Step 3: Implement run lifecycle**
+- [x] **Step 3: Implement run lifecycle**
 
 A run inserts `source_runs.status='running'`, invokes only the adapter registered for `adapter_type`, ingests each valid result independently, then finishes as `completed` with `result_count`. One malformed item increments an error summary without discarding valid siblings. Network/adapter failure marks only that run `failed`, updates source health, and leaves other sources runnable. Cancellation is not exposed until background scheduling exists.
 
 Do not hold a SQLite write transaction during network I/O. Persist start, perform fetch, then transact each bounded ingestion and final run update.
 
-- [ ] **Step 4: Add deterministic registry tests**
+- [x] **Step 4: Add deterministic registry tests**
 
 Unknown adapter types are validation errors. Config is strict JSON with no credentials, cookies, headers, or arbitrary local paths. Default employer URLs must be `https` and source list responses expose no database path.
 
-- [ ] **Step 5: Verify and commit**
+- [x] **Step 5: Verify and commit**
 
 Run all Phase 2 tests and existing BioJob suite. Commit as `feat(biojob): orchestrate isolated discovery runs`.
 
@@ -244,7 +244,7 @@ Run all Phase 2 tests and existing BioJob suite. Commit as `feat(biojob): orches
 - Modify: `hermes_cli/web_routers/biojob.py`
 - Test: `tests/biojob/test_discovery_api.py`
 
-- [ ] **Step 1: Write failing API tests**
+- [x] **Step 1: Write failing API tests**
 
 Add these authenticated local routes:
 
@@ -262,11 +262,11 @@ GET    /api/biojob/source-runs
 
 Tests cover manual import, a duplicate import retaining links, pending list, keep-to-application, ignore/later decisions, filters, missing IDs, disabled/unknown sources, a failed adapter isolated to one run, and dashboard candidate/source counts.
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 Expected: 404 for the new routes.
 
-- [ ] **Step 3: Implement strict models and thin handlers**
+- [x] **Step 3: Implement strict models and thin handlers**
 
 Reuse the existing strict non-finite JSON base model, URL validation, `asyncio.to_thread`, domain error mapping, and generic 500 redaction. Source config accepts only adapter-specific public fields:
 
@@ -278,11 +278,11 @@ manual: no persisted network config
 
 No API key, Cookie, Authorization header, proxy credential, or local file path is accepted.
 
-- [ ] **Step 4: Verify real auth boundary**
+- [x] **Step 4: Verify real auth boundary**
 
 Confirm the new routes are not in `PUBLIC_API_PATHS` and unauthenticated access through the real dashboard app is rejected.
 
-- [ ] **Step 5: Verify and commit**
+- [x] **Step 5: Verify and commit**
 
 Run all BioJob tests plus `tests/hermes_cli/test_dashboard_auth_middleware.py`. Commit as `feat(biojob): expose candidate discovery API`.
 
@@ -292,15 +292,15 @@ Run all BioJob tests plus `tests/hermes_cli/test_dashboard_auth_middleware.py`. 
 - Modify: `docs/baseline/hermes-windows-baseline.md`
 - Modify: `docs/superpowers/plans/2026-08-12-biojob-discovery-candidates.md`
 
-- [ ] **Step 1: Run Phase 2 gates**
+- [x] **Step 1: Run Phase 2 gates**
 
 Run the complete BioJob suite, the nine retained Windows regressions, desktop build, capability check, and a schema scan that confirms no credential-shaped columns or source config keys.
 
-- [ ] **Step 2: Run a live non-mutating source smoke test**
+- [x] **Step 2: Run a live non-mutating source smoke test**
 
 Against a temporary `HERMES_HOME`, run each enabled default public landing source once. Record result counts and health honestly. A zero-result or failed anti-bot source is acceptable only when isolated and clearly reported; no login or bypass is attempted.
 
-- [ ] **Step 3: Update verification records**
+- [x] **Step 3: Update verification records**
 
 Append a `Phase 2 discovery and candidates` section with exact commands, test counts, source smoke results, and the explicit no-auto-apply boundary. Mark completed checklist items.
 
