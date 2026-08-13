@@ -35,6 +35,10 @@ param(
     # It makes first launch independent of repository visibility and GitHub
     # credentials while preserving a real git checkout and pinned commit.
     [string]$LocalArchive = "",
+    # Keep a branded desktop runtime private to the app. The desktop process
+    # supplies HERMES_HOME to its backend, so it must not replace a user's
+    # existing Hermes CLI PATH or persisted HERMES_HOME.
+    [switch]$IsolatedDesktop,
 
     # --- Stage protocol (additive; default invocation behaves as before) ----
     # See the "Stage protocol" section near the bottom of the file for the
@@ -769,9 +773,11 @@ function Install-Uv {
     # UV_INSTALL_DIR tells the astral installer to place the binary
     # directly into $HermesHome\bin instead of ~/.local/bin.
     $prevEAP = $ErrorActionPreference
+    $previousUvNoModifyPath = $env:UV_NO_MODIFY_PATH
     try {
         $ErrorActionPreference = "Continue"
         $env:UV_INSTALL_DIR = Join-Path $HermesHome "bin"
+        if ($IsolatedDesktop) { $env:UV_NO_MODIFY_PATH = "1" }
         # Spawn via the resolved host exe (see Get-PowerShellHostExe) rather
         # than a bare `powershell`, which isn't guaranteed to be on PATH under
         # PowerShell 7 / pwsh-only setups.
@@ -794,6 +800,12 @@ function Install-Uv {
         Write-Err "Failed to install uv: $_"
         Write-Info "Install manually: https://docs.astral.sh/uv/getting-started/installation/"
         return $false
+    } finally {
+        if ($null -eq $previousUvNoModifyPath) {
+            Remove-Item Env:UV_NO_MODIFY_PATH -ErrorAction SilentlyContinue
+        } else {
+            $env:UV_NO_MODIFY_PATH = $previousUvNoModifyPath
+        }
     }
 }
 
@@ -2761,6 +2773,13 @@ function Set-PathVariable {
         $hermesBin = "$InstallDir"
     } else {
         $hermesBin = "$InstallDir\venv\Scripts"
+    }
+
+    if ($IsolatedDesktop) {
+        $env:HERMES_HOME = $HermesHome
+        $env:Path = "$hermesBin;$env:Path"
+        Write-Success "Isolated desktop runtime ready (user environment unchanged)"
+        return
     }
     
     # Add the venv Scripts dir to user PATH so hermes is globally available

@@ -122,6 +122,37 @@ if ($errFrame) {
 }
 
 # -----------------------------------------------------------------------------
+# Test: isolated desktop path stage leaves persistent user environment alone
+# -----------------------------------------------------------------------------
+Write-Host ""
+Write-Host "-- -IsolatedDesktop path stage --"
+$userHomeBefore = [Environment]::GetEnvironmentVariable("HERMES_HOME", "User")
+$userPathBefore = [Environment]::GetEnvironmentVariable("Path", "User")
+$isolatedRoot = Join-Path $env:TEMP ("biojob-isolated-path-test-" + [guid]::NewGuid().ToString("N"))
+$isolatedInstall = Join-Path $isolatedRoot "hermes-agent"
+
+try {
+    $pathOutput = & powershell -NoProfile -ExecutionPolicy Bypass -File $installScript `
+        -Stage "path" -NonInteractive -Json -IsolatedDesktop `
+        -HermesHome $isolatedRoot -InstallDir $isolatedInstall
+    Assert-Equal -Expected 0 -Actual $LASTEXITCODE -Label "isolated path stage exits 0"
+
+    $pathFrame = $pathOutput | Select-Object -Last 1 | ConvertFrom-Json
+    Assert-Equal -Expected $true -Actual $pathFrame.ok -Label "isolated path stage succeeds"
+    Assert-Equal -Expected $userHomeBefore `
+        -Actual ([Environment]::GetEnvironmentVariable("HERMES_HOME", "User")) `
+        -Label "isolated path stage preserves user HERMES_HOME"
+    Assert-Equal -Expected $userPathBefore `
+        -Actual ([Environment]::GetEnvironmentVariable("Path", "User")) `
+        -Label "isolated path stage preserves user PATH"
+} finally {
+    # Protect the developer machine even if a regression writes either value.
+    [Environment]::SetEnvironmentVariable("HERMES_HOME", $userHomeBefore, "User")
+    [Environment]::SetEnvironmentVariable("Path", $userPathBefore, "User")
+    Remove-Item -LiteralPath $isolatedRoot -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+# -----------------------------------------------------------------------------
 # Summary
 # -----------------------------------------------------------------------------
 Write-Host ""

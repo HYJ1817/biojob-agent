@@ -687,6 +687,7 @@ function buildPinArgs(installStamp, { pinCommit = true, localArchive = null } = 
 
   if (localArchive) {
     args.push('-LocalArchive', localArchive)
+    args.push('-IsolatedDesktop')
   }
 
   return args

@@ -103,7 +103,8 @@ test('fresh Windows bootstrap args carry the bundled repository payload', () => 
     '-Branch',
     'biojob-main',
     '-LocalArchive',
-    localArchive
+    localArchive,
+    '-IsolatedDesktop'
   ])
 })
 
