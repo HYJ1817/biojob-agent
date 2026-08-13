@@ -18,6 +18,7 @@ import {
   hermesRuntimeImportProbe,
   PROBE_TIMEOUT_MS,
   resolveProbeTimeoutMs,
+  shouldConsiderExternalHermesRuntime,
   shouldTrustHermesOverride,
   verifyHermesCli
 } from './backend-probes'
@@ -57,6 +58,12 @@ test('hermes runtime import probe checks config dependencies', () => {
   // passed the old probe and produced an unrecoverable boot loop.
   assert.match(probe, /\bimport dotenv\b/)
   assert.match(probe, /\bimport hermes_cli\.config\b/)
+  assert.match(probe, /\bimport biojob\b/)
+})
+
+test('packaged BioJob never considers machine-wide Hermes candidates', () => {
+  assert.equal(shouldConsiderExternalHermesRuntime(true), false)
+  assert.equal(shouldConsiderExternalHermesRuntime(false), true)
 })
 
 test('explicit Hermes override is authoritative', () => {

@@ -120,7 +120,12 @@ function execProbeSync(
  * @returns {string}
  */
 function hermesRuntimeImportProbe() {
-  return 'import yaml; import dotenv; import hermes_cli.config'
+  return 'import yaml; import dotenv; import hermes_cli.config; import biojob'
+}
+
+/** Packaged BioJob must never adopt a machine-wide generic Hermes runtime. */
+function shouldConsiderExternalHermesRuntime(isPackaged: boolean) {
+  return !isPackaged
 }
 
 /**
@@ -216,6 +221,7 @@ export {
   hermesRuntimeImportProbe,
   PROBE_TIMEOUT_MS,
   resolveProbeTimeoutMs,
+  shouldConsiderExternalHermesRuntime,
   shouldTrustHermesOverride,
   verifyHermesCli
 }

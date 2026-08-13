@@ -43,6 +43,7 @@ import {
   canImportHermesCli,
   execProbeSync,
   PROBE_TIMEOUT_MS,
+  shouldConsiderExternalHermesRuntime,
   shouldTrustHermesOverride,
   verifyHermesCli
 } from './backend-probes'
@@ -3994,7 +3995,7 @@ function resolveHermesBackend(backendArgs) {
   //    do NOT write a bootstrap marker; the user did this themselves and we
   //    don't want to take ownership of an install we didn't perform.
   //    HERMES_DESKTOP_IGNORE_EXISTING=1 forces the bootstrap path for testing.
-  if (process.env.HERMES_DESKTOP_IGNORE_EXISTING !== '1') {
+  if (shouldConsiderExternalHermesRuntime(IS_PACKAGED) && process.env.HERMES_DESKTOP_IGNORE_EXISTING !== '1') {
     let hermesCommand = null
     const hermesOverride = process.env.HERMES_DESKTOP_HERMES
 
@@ -4065,7 +4066,7 @@ function resolveHermesBackend(backendArgs) {
   // 5. Last-ditch: pip-installed hermes_cli module via system Python.
   //    Same rationale as #4 -- the user installed this; we use it but don't
   //    take ownership.
-  const python = findSystemPython()
+  const python = shouldConsiderExternalHermesRuntime(IS_PACKAGED) ? findSystemPython() : null
 
   if (python) {
     // Same smoke-test rationale as step 4: a system Python in the
