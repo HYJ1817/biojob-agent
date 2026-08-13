@@ -282,6 +282,71 @@ function launchFresh() {
   return { runtimeRoot: path.join(hermesHome, 'hermes-agent', 'venv') }
 }
 
+async function launchLegacyIsolationProbe() {
+  if (!exists(APP.binary)) {
+    die(`Missing app executable: ${APP.binary}`)
+  }
+
+  const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'biojob-legacy-isolation-'))
+  const localAppData = path.join(sandbox, 'local-app-data')
+  const appData = path.join(sandbox, 'roaming-app-data')
+  const userDataDir = path.join(sandbox, 'electron-user-data')
+  const legacyHome = path.join(localAppData, 'hermes')
+  const expectedHome = path.join(localAppData, 'BioJob Agent')
+  const sentinel = path.join(legacyHome, 'legacy-hermes-sentinel.txt')
+  fs.mkdirSync(legacyHome, { recursive: true })
+  fs.mkdirSync(appData, { recursive: true })
+  fs.mkdirSync(userDataDir, { recursive: true })
+  fs.writeFileSync(sentinel, 'legacy-hermes-must-remain-unchanged\n')
+
+  const env = {}
+  for (const [key, value] of Object.entries(process.env)) {
+    if (isCredentialEnvVar(key)) continue
+    env[key] = value
+  }
+  env.LOCALAPPDATA = localAppData
+  env.APPDATA = appData
+  env.HERMES_HOME = legacyHome
+  env.HERMES_DESKTOP_TEST_MODE = 'legacy-hermes-isolation'
+  delete env.HERMES_DESKTOP_USER_DATA_DIR
+  delete env.HERMES_DESKTOP_HERMES
+  delete env.HERMES_DESKTOP_HERMES_ROOT
+
+  const child = spawn(APP.binary, [`--user-data-dir=${userDataDir}`], {
+    cwd: sandbox,
+    env,
+    stdio: 'ignore'
+  })
+  const legacyLog = path.join(legacyHome, 'logs', 'desktop.log')
+  const expectedLog = path.join(expectedHome, 'logs', 'desktop.log')
+  const deadline = Date.now() + 30_000
+
+  try {
+    while (Date.now() < deadline) {
+      if (exists(legacyLog)) {
+        die(`Packaged BioJob reused the legacy Hermes home: ${legacyLog}`)
+      }
+      if (exists(expectedLog) && fs.readFileSync(expectedLog, 'utf8').includes('[boot]')) {
+        if (fs.readFileSync(sentinel, 'utf8') !== 'legacy-hermes-must-remain-unchanged\n') {
+          die(`Legacy Hermes sentinel changed: ${sentinel}`)
+        }
+        console.log('\nLegacy Hermes isolation probe passed:')
+        console.log(`  sandbox: ${sandbox}`)
+        console.log(`  legacy home unchanged: ${legacyHome}`)
+        console.log(`  BioJob home selected: ${expectedHome}`)
+        return { runtimeRoot: path.join(expectedHome, 'hermes-agent', 'venv') }
+      }
+      if (child.exitCode !== null) {
+        die(`Packaged BioJob exited before selecting its isolated home (exit=${child.exitCode})`)
+      }
+      await new Promise(resolve => setTimeout(resolve, 250))
+    }
+    die(`Timed out waiting for BioJob to select its isolated home: ${expectedHome}`)
+  } finally {
+    if (child.exitCode === null) child.kill()
+  }
+}
+
 // Validate the packaged bundle matches the BioJob bootstrap architecture:
 //   - A compact source ZIP and installer script are shipped for first launch,
 //     so a private repository never blocks installation.
@@ -403,6 +468,7 @@ function help() {
   console.log(`Usage:
   npm run test:desktop:existing  # build packaged app, launch with normal PATH/existing Hermes
   npm run test:desktop:fresh     # build packaged app, launch with temp userData + HERMES_HOME
+  npm run test:desktop:legacy    # verify packaged app ignores a seeded legacy Hermes home
   npm run test:desktop:dmg       # (macOS only) build DMG and open it
   npm run test:desktop:nsis      # (win32 only) build NSIS installer
   npm run test:desktop:all       # build installer, validate app payload, print paths
@@ -423,6 +489,10 @@ if (MODE === 'existing') {
   ensurePackagedApp()
   const result = validateBundle()
   printArtifacts({ ...launchFresh(), ...result })
+} else if (MODE === 'legacy') {
+  ensurePackagedApp()
+  const result = validateBundle()
+  printArtifacts({ ...(await launchLegacyIsolationProbe()), ...result })
 } else if (MODE === 'dmg') {
   ensureDmg()
   openDmg()
