@@ -8,6 +8,8 @@ export interface BioJobHomeOptions {
   homeDir: string
 }
 
+export type LegacyHermesHomeOptions = Pick<BioJobHomeOptions, 'platform' | 'env' | 'homeDir'>
+
 function pathApi(platform: NodeJS.Platform) {
   return platform === 'win32' ? path.win32 : path.posix
 }
@@ -34,3 +36,10 @@ export function resolveBioJobHome(options: BioJobHomeOptions): string {
   return paths.join(options.env.XDG_DATA_HOME || paths.join(options.homeDir, '.local', 'share'), 'biojob-agent')
 }
 
+export function resolveLegacyHermesHome(options: LegacyHermesHomeOptions): string | null {
+  if (options.platform !== 'win32' || !options.env.LOCALAPPDATA) {
+    return null
+  }
+
+  return path.win32.join(options.env.LOCALAPPDATA, 'hermes')
+}

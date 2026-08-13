@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 
 import { test } from 'vitest'
 
-import { resolveBioJobHome } from './biojob-home'
+import { resolveBioJobHome, resolveLegacyHermesHome } from './biojob-home'
 
 test('packaged Windows BioJob ignores an existing Hermes home', () => {
   const actual = resolveBioJobHome({
@@ -66,3 +66,17 @@ test('packaged macOS and Linux builds use BioJob-specific homes', () => {
   )
 })
 
+test('legacy Windows BioJob data is discovered only under the old Hermes root', () => {
+  assert.equal(
+    resolveLegacyHermesHome({
+      platform: 'win32',
+      env: { LOCALAPPDATA: 'C:\\Users\\test\\AppData\\Local' },
+      homeDir: 'C:\\Users\\test'
+    }),
+    'C:\\Users\\test\\AppData\\Local\\hermes'
+  )
+  assert.equal(
+    resolveLegacyHermesHome({ platform: 'linux', env: {}, homeDir: '/home/test' }),
+    null
+  )
+})

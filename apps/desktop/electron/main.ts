@@ -36,7 +36,8 @@ import { stopBackendChild as stopBackendChildImpl, stopBackendTreesForUpdate } f
 import { dashboardFallbackArgs, sourceDeclaresServe } from './backend-command'
 import { createBackendConnectionState } from './backend-connection-state'
 import { buildDesktopBackendEnv, hermesManagedNodePathEntries } from './backend-env'
-import { resolveBioJobHome } from './biojob-home'
+import { resolveBioJobHome, resolveLegacyHermesHome } from './biojob-home'
+import { migrateLegacyBioJobData } from './biojob-migration'
 import { isReauthRequiredError, waitForHermesReady } from './backend-health'
 import {
   canImportHermesCli,
@@ -545,6 +546,31 @@ const HERMES_HOME = resolveBioJobHome({
   userDataOverride: USER_DATA_OVERRIDE,
   homeDir: app.getPath('home')
 })
+let bioJobMigrationComplete = false
+
+function ensureLegacyBioJobDataMigrated() {
+  if (bioJobMigrationComplete) {
+    return
+  }
+
+  const legacyHome = resolveLegacyHermesHome({
+    platform: process.platform,
+    env: process.env,
+    homeDir: app.getPath('home')
+  })
+
+  if (!legacyHome || path.resolve(legacyHome).toLowerCase() === path.resolve(HERMES_HOME).toLowerCase()) {
+    bioJobMigrationComplete = true
+    return
+  }
+
+  const result = migrateLegacyBioJobData({ legacyHome, targetHome: HERMES_HOME })
+  bioJobMigrationComplete = true
+
+  if (result.status === 'migrated') {
+    rememberLog(`[biojob] copied existing BioJob data into isolated storage at ${result.target}; source retained`)
+  }
+}
 
 function pathWithHermesManagedNode(...entries) {
   const managed = hermesManagedNodePathEntries(HERMES_HOME).filter(directoryExists)
@@ -8522,6 +8548,7 @@ async function startHermes() {
       ensureLocalRuntime: ensureRuntime,
       prepareLocalBackend: async () => {
         await advanceBootProgress('backend.runtime', 'Resolving Hermes runtime', 28)
+        ensureLegacyBioJobDataMigrated()
 
         return resolveHermesBackend(backendArgs)
       },
