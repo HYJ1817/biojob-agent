@@ -189,6 +189,13 @@ async def patch_source(source_id: str, body: SourcePatch) -> dict[str, Any]:
     )
 
 
+@router.post("/sources/run-enabled")
+async def run_enabled_sources() -> dict[str, Any]:
+    return await _run_service(
+        lambda: BioJobService().run_enabled_sources(actor=_ACTOR)
+    )
+
+
 @router.post("/sources/{source_id}/run")
 async def run_source(source_id: str) -> dict[str, Any]:
     return await _run_service(

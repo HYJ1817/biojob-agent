@@ -5,6 +5,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from biojob.service import BioJobService
+from biojob.sources.catalog import DEFAULT_SOURCES
 from hermes_cli.dashboard_auth.public_paths import PUBLIC_API_PATHS
 from hermes_cli.web_routers import biojob as biojob_routes
 
@@ -162,7 +163,7 @@ def test_candidate_missing_conflict_and_request_validation(client):
 def test_source_endpoints_seed_create_update_run_and_history(client):
     defaults = client.get("/api/biojob/sources")
     assert defaults.status_code == 200
-    assert len(defaults.json()["items"]) == 6
+    assert len(defaults.json()["items"]) == len(DEFAULT_SOURCES)
 
     created = client.post(
         "/api/biojob/sources",
@@ -226,6 +227,52 @@ def test_source_run_failure_is_returned_and_isolated(client, monkeypatch):
     assert response.json()["status"] == "failed"
     history = client.get("/api/biojob/source-runs", params={"source_id": source["id"]})
     assert history.json()["items"][0]["status"] == "failed"
+
+
+def test_run_enabled_sources_endpoint_returns_isolated_batch_summary(
+    client, monkeypatch
+):
+    class EmptyAdapter:
+        adapter_type = "manual"
+
+        def fetch(self, config):
+            return []
+
+    class FailingAdapter:
+        adapter_type = "public_page"
+
+        def fetch(self, config):
+            raise RuntimeError("blocked by upstream")
+
+    real_service = BioJobService(
+        source_adapters={
+            "manual": EmptyAdapter(),
+            "public_page": FailingAdapter(),
+        }
+    )
+    monkeypatch.setattr(biojob_routes, "BioJobService", lambda: real_service)
+    real_service.create_source(
+        name="可运行来源", adapter_type="manual", config={}, actor="test"
+    )
+    real_service.create_source(
+        name="失败来源",
+        adapter_type="public_page",
+        config={"url": "https://jobs.example.test"},
+        actor="test",
+    )
+
+    response = client.post("/api/biojob/sources/run-enabled")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert {run["status"] for run in payload["runs"]} == {"completed", "failed"}
+    assert payload["summary"] == {
+        "completed_sources": 1,
+        "failed_sources": 1,
+        "new_candidates": 0,
+        "merged_results": 0,
+        "pending_verification": 0,
+    }
 
 
 def test_dashboard_includes_candidate_and_source_counts(client):

@@ -25,6 +25,7 @@ import {
   listSources,
   patchJob,
   runJobMatch,
+  runEnabledSources,
   runSource,
   setProfileFactStatus,
   updateSource
@@ -33,6 +34,7 @@ import { useBioJobCopy } from './copy'
 import type {
   ApplicationStatus,
   BioJobCandidate,
+  BioJobBatchRun,
   BioJobDashboard,
   BioJobMatchReport,
   BioJobRecord,
@@ -355,6 +357,11 @@ function CandidateRow({
         <div className="flex flex-wrap items-baseline gap-2">
           <h3 className="font-serif text-lg font-semibold">{candidate.title}</h3>
           <span className="font-mono text-xs text-(--theme-primary)">{candidate.match.score}</span>
+          {candidate.needs_verification && (
+            <span className="border border-(--ui-stroke-secondary) px-1.5 py-0.5 text-[0.625rem] text-(--ui-text-secondary)">
+              {c.needsVerification}
+            </span>
+          )}
         </div>
         <p className="mt-1 text-xs text-(--ui-text-secondary)">
           {candidate.company.name}
@@ -362,7 +369,7 @@ function CandidateRow({
         </p>
         <p className="mt-3 line-clamp-2 text-sm leading-6 text-(--ui-text-secondary)">{candidate.jd_text}</p>
         <div className="mt-3 flex flex-wrap gap-3 text-xs">
-          <JobLink href={candidate.links.detail} label={c.viewJd} />
+          <JobLink href={candidate.links.detail} label={candidate.needs_verification ? c.openOriginal : c.viewJd} />
           <JobLink href={candidate.links.apply} label={c.applyNow} />
           <JobLink href={candidate.links.careers} label={c.careers} />
         </div>
@@ -700,15 +707,44 @@ function FactsView({ busy, facts, perform }: { busy: string | null; facts: Profi
 
 function SourcesView({ busy, perform, sources }: { busy: string | null; perform: Performer; sources: BioJobSource[] }) {
   const c = useBioJobCopy()
+  const [batchSummary, setBatchSummary] = useState<BioJobBatchRun['summary'] | null>(null)
+  const automaticSources = sources.filter(source => source.adapter_type !== 'portal')
+  const portals = sources.filter(source => source.adapter_type === 'portal')
 
   return (
     <section>
-      <PageHeading subtitle={c.sourcesSubtitle} title={c.sourcesTitle} />
+      <PageHeading
+        action={
+          <Button
+            disabled={automaticSources.every(source => !source.enabled) || busy === 'sources:all'}
+            onClick={() =>
+              void perform('sources:all', async () => {
+                const result = await runEnabledSources()
+                setBatchSummary(result.summary)
+              })
+            }
+            size="sm"
+          >
+            {c.runAllSources}
+          </Button>
+        }
+        subtitle={c.sourcesSubtitle}
+        title={c.sourcesTitle}
+      />
+      {batchSummary && (
+        <div className="mt-5 flex flex-wrap gap-x-5 gap-y-2 border-y border-(--ui-stroke-tertiary) py-3 font-mono text-xs">
+          <span>{c.batchNew} {batchSummary.new_candidates}</span>
+          <span>{c.batchMerged} {batchSummary.merged_results}</span>
+          <span>{c.batchPending} {batchSummary.pending_verification}</span>
+          <span>{c.batchFailed} {batchSummary.failed_sources}</span>
+        </div>
+      )}
       {sources.length === 0 ? (
         <EmptyState title={c.noSources} />
       ) : (
-        <div className="mt-5 divide-y divide-(--ui-stroke-tertiary) border-y border-(--ui-stroke-tertiary)">
-          {sources.map(source => (
+        <div className="mt-7 grid gap-8">
+          <SourceGroup title={c.automaticSources}>
+          {automaticSources.map(source => (
             <div className="flex flex-wrap items-center gap-4 py-4" key={source.id}>
               <Codicon
                 className={source.health_status === 'failed' ? 'text-destructive' : 'text-(--theme-primary)'}
@@ -722,7 +758,7 @@ function SourcesView({ busy, perform, sources }: { busy: string | null; perform:
                   {source.health_status === 'healthy'
                     ? c.healthy
                     : source.health_status === 'failed'
-                      ? c.failed
+                      ? `${c.failed}：${c.sourceFailedHint}`
                       : c.unknown}
                 </div>
               </div>
@@ -746,8 +782,39 @@ function SourcesView({ busy, perform, sources }: { busy: string | null; perform:
               </Button>
             </div>
           ))}
+          </SourceGroup>
+          <SourceGroup title={c.officialPortals}>
+            {portals.map(source => {
+              const portalUrl = typeof source.config.url === 'string' ? source.config.url : null
+              return (
+                <div className="flex flex-wrap items-center gap-4 py-4" key={source.id}>
+                  <Codicon className="text-(--theme-primary)" name="link-external" size="0.9rem" />
+                  <div className="min-w-0 flex-1">
+                    <div className="text-sm font-medium">{source.name}</div>
+                    <div className="mt-1 text-xs text-(--ui-text-tertiary)">{source.description}</div>
+                  </div>
+                  {portalUrl && (
+                    <Button asChild size="xs" variant="secondary">
+                      <a href={portalUrl} rel="noreferrer" target="_blank">{c.openPortal}</a>
+                    </Button>
+                  )}
+                </div>
+              )
+            })}
+          </SourceGroup>
         </div>
       )}
+    </section>
+  )
+}
+
+function SourceGroup({ children, title }: { children: React.ReactNode; title: string }) {
+  return (
+    <section>
+      <h3 className="font-serif text-base font-semibold">{title}</h3>
+      <div className="mt-2 divide-y divide-(--ui-stroke-tertiary) border-y border-(--ui-stroke-tertiary)">
+        {children}
+      </div>
     </section>
   )
 }

@@ -18,6 +18,7 @@ import {
   listSources,
   patchJob,
   runJobMatch,
+  runEnabledSources,
   runSource,
   setProfileFactStatus,
   updateSource
@@ -88,6 +89,7 @@ describe('BioJob desktop API boundary', () => {
     await createProfileFact(fact)
     await setProfileFactStatus('fact 1', 'confirmed')
     await updateSource('source 1', { enabled: false })
+    await runEnabledSources()
     await runSource('source 1')
     await importProfileDocument('C:\\Users\\me\\resume.docx')
     await generateResume('job 1')
@@ -113,6 +115,7 @@ describe('BioJob desktop API boundary', () => {
         path: '/api/biojob/profile-facts/fact%201'
       },
       { body: { enabled: false }, method: 'PATCH', path: '/api/biojob/sources/source%201' },
+      { body: {}, method: 'POST', path: '/api/biojob/sources/run-enabled' },
       { body: {}, method: 'POST', path: '/api/biojob/sources/source%201/run' },
       {
         body: { file_path: 'C:\\Users\\me\\resume.docx' },

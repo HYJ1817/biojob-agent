@@ -103,6 +103,7 @@ export interface BioJobCandidate extends Omit<BioJobRecord, 'application'> {
     rule_version: string
     score: number
   }
+  needs_verification: boolean
   snapshot_count: number
   source_count: number
 }
@@ -122,7 +123,7 @@ export interface ProfileFact {
 }
 
 export interface BioJobSource {
-  adapter_type: 'feed' | 'manual' | 'public_page'
+  adapter_type: 'feed' | 'manual' | 'portal' | 'public_page' | 'search_feed'
   config: Record<string, unknown>
   created_at: string
   description: null | string
@@ -132,6 +133,17 @@ export interface BioJobSource {
   last_checked_at: null | string
   name: string
   updated_at: string
+}
+
+export interface BioJobBatchRun {
+  runs: BioJobSourceRun[]
+  summary: {
+    completed_sources: number
+    failed_sources: number
+    merged_results: number
+    new_candidates: number
+    pending_verification: number
+  }
 }
 
 export interface BioJobSourceRun {

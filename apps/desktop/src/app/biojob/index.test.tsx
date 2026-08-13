@@ -26,6 +26,7 @@ vi.mock('./api', () => ({
   listSources: vi.fn(),
   patchJob: vi.fn(),
   runJobMatch: vi.fn(),
+  runEnabledSources: vi.fn(),
   runSource: vi.fn(),
   setProfileFactStatus: vi.fn(),
   updateSource: vi.fn()
@@ -44,6 +45,7 @@ const candidate = {
     detail: 'https://jobs.example.test/1'
   },
   match: { recommendation: '建议查看', score: 72 },
+  needs_verification: false,
   title: '生物工艺工程师'
 }
 
@@ -73,6 +75,16 @@ describe('BioJob workbench', () => {
     vi.mocked(api.exportApplications).mockResolvedValue({ file_path: 'C:\\BioJob\\投递表.xlsx' } as never)
     vi.mocked(api.generateResume).mockResolvedValue({ file_path: 'C:\\BioJob\\简历.docx' } as never)
     vi.mocked(api.importProfileDocument).mockResolvedValue({ fact_count: 2 } as never)
+    vi.mocked(api.runEnabledSources).mockResolvedValue({
+      runs: [],
+      summary: {
+        completed_sources: 9,
+        failed_sources: 1,
+        merged_results: 3,
+        new_candidates: 6,
+        pending_verification: 8
+      }
+    } as never)
   })
 
   it('shows the real job workflow in the first viewport', async () => {
@@ -110,6 +122,59 @@ describe('BioJob workbench', () => {
     fireEvent.click(screen.getByRole('button', { name: '重试' }))
 
     expect(await screen.findByRole('heading', { name: '秋招工作台' })).toBeTruthy()
+  })
+
+  it('groups automatic discovery and official portals and summarizes run all', async () => {
+    vi.mocked(api.listSources).mockResolvedValue([
+      {
+        adapter_type: 'search_feed',
+        config: { query_label: '山东', url: 'https://www.bing.com/search?format=rss&q=test' },
+        created_at: '2026-08-13T00:00:00Z',
+        description: '山东岗位发现',
+        enabled: true,
+        health_status: 'healthy',
+        id: 'search-shandong',
+        last_checked_at: null,
+        name: '山东生物医药岗位发现',
+        updated_at: '2026-08-13T00:00:00Z'
+      },
+      {
+        adapter_type: 'portal',
+        config: { company_name: '齐鲁制药', url: 'https://www.qilu-pharma.com/position.html' },
+        created_at: '2026-08-13T00:00:00Z',
+        description: '官方招聘入口',
+        enabled: false,
+        health_status: 'unknown',
+        id: 'default-qilu',
+        last_checked_at: null,
+        name: '齐鲁制药招聘',
+        updated_at: '2026-08-13T00:00:00Z'
+      }
+    ] as never)
+    renderWorkbench()
+    fireEvent.click(await screen.findByRole('button', { name: '岗位来源' }))
+
+    expect(await screen.findByRole('heading', { name: '自动发现来源' })).toBeTruthy()
+    expect(screen.getByRole('heading', { name: '官方核验入口' })).toBeTruthy()
+    expect(screen.getByRole('link', { name: '打开招聘页' }).getAttribute('href')).toBe(
+      'https://www.qilu-pharma.com/position.html'
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: '运行全部启用来源' }))
+    await waitFor(() => expect(api.runEnabledSources).toHaveBeenCalledTimes(1))
+    expect(await screen.findByText('新增 6')).toBeTruthy()
+    expect(screen.getByText('合并重复 3')).toBeTruthy()
+    expect(screen.getByText('待核验 8')).toBeTruthy()
+    expect(screen.getByText('失败来源 1')).toBeTruthy()
+  })
+
+  it('marks public search candidates for original-page verification', async () => {
+    vi.mocked(api.listCandidates).mockResolvedValue([{ ...candidate, needs_verification: true }] as never)
+    renderWorkbench()
+    fireEvent.click(await screen.findByRole('button', { name: '候选岗位' }))
+
+    expect(await screen.findByText('待核验')).toBeTruthy()
+    expect(screen.getByRole('link', { name: '打开原页面' }).getAttribute('href')).toBe(candidate.links.detail)
   })
 
   it('imports a base resume and reveals generated Word and Excel files', async () => {
