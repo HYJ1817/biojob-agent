@@ -13,7 +13,7 @@ from biojob.domain import (
     RawJob,
 )
 from biojob.service import BioJobService
-from biojob.sources.catalog import DEFAULT_SOURCES
+from biojob.sources.catalog import DEFAULT_SOURCES, reviewed_hosts_for_source
 
 
 @pytest.fixture
@@ -63,24 +63,26 @@ def raw_job(number=1):
     )
 
 
-def test_default_catalog_has_reviewed_https_sources_and_disabled_experiment(service):
+def test_default_catalog_covers_target_directions_regions_and_portals(service):
     sources = service.ensure_default_sources()
 
-    assert len(sources) == 6
-    assert {source["name"] for source in sources} == {
-        "齐鲁制药招聘",
-        "荣昌生物招聘",
-        "绿叶制药招聘",
-        "华熙生物招聘",
-        "康龙化成校园招聘",
-        "公开搜索发现（实验）",
-    }
-    assert sum(source["enabled"] for source in sources) == 5
-    experimental = next(source for source in sources if "实验" in source["name"])
-    assert experimental["enabled"] is False
+    discovery = [source for source in sources if source["adapter_type"] == "search_feed"]
+    portals = [source for source in sources if source["adapter_type"] == "portal"]
+    labels = " ".join(str(source["config"].get("query_label", "")) for source in discovery)
+
+    assert len(discovery) >= 8
+    assert all(source["enabled"] for source in discovery)
+    assert all(term in labels for term in ("生产工艺", "QA QC", "细胞实验", "发酵微生物"))
+    assert "山东" in labels
+    assert "大城市" in labels
+    assert "高校就业网" in labels
+    assert "重点企业" in labels
+    assert len(portals) >= 5
+    assert all(not source["enabled"] for source in portals)
     assert all(source["config"]["url"].startswith("https://") for source in sources)
     assert all("database" not in source for source in sources)
-    assert len(DEFAULT_SOURCES) == 6
+    assert len(sources) == len(DEFAULT_SOURCES)
+    assert all(reviewed_hosts_for_source(source["id"]) for source in discovery)
 
 
 def test_default_upsert_is_idempotent_and_preserves_user_changes(service):
@@ -99,7 +101,7 @@ def test_default_upsert_is_idempotent_and_preserves_user_changes(service):
     repeated = service.ensure_default_sources()
     updated = next(source for source in repeated if source["id"] == qilu["id"])
 
-    assert len(repeated) == 6
+    assert len(repeated) == len(DEFAULT_SOURCES)
     assert updated["enabled"] is False
     assert updated["config"]["url"] == "https://jobs.example.test/qilu"
 
@@ -111,7 +113,7 @@ def test_default_upsert_tolerates_user_renaming_stable_default(service):
 
     repeated = service.ensure_default_sources()
 
-    assert len(repeated) == 6
+    assert len(repeated) == len(DEFAULT_SOURCES)
     assert (
         next(source for source in repeated if source["id"] == qilu["id"])["name"]
         == "我的齐鲁关注"

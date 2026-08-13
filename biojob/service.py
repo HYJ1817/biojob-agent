@@ -1746,6 +1746,8 @@ def _validate_source_config(
     allowed_by_adapter = {
         "public_page": {"url", "company_name", "careers_url"},
         "feed": {"url", "company_name", "careers_url"},
+        "search_feed": {"url", "query_label", "careers_url"},
+        "portal": {"url", "company_name"},
         "manual": set(),
     }
     allowed = allowed_by_adapter.get(adapter_type, set())
@@ -1754,7 +1756,7 @@ def _validate_source_config(
         raise DomainValidationError(
             f"unsupported source config field: {sorted(unknown)[0]}"
         )
-    if adapter_type not in {"public_page", "feed", "manual"}:
+    if adapter_type not in {"public_page", "feed", "search_feed", "portal", "manual"}:
         if config:
             raise DomainValidationError("custom source adapters require empty config")
         return {}
@@ -1764,6 +1766,11 @@ def _validate_source_config(
     if url is None:
         raise DomainValidationError("url must be a non-empty URL")
     result = {"url": url}
+    query_label = _normalize_candidate_text("query_label", config.get("query_label"))
+    if adapter_type == "search_feed" and query_label is None:
+        raise DomainValidationError("query_label must be a non-empty string")
+    if query_label is not None:
+        result["query_label"] = query_label
     company_name = _normalize_candidate_text("company_name", config.get("company_name"))
     if company_name is not None:
         result["company_name"] = company_name

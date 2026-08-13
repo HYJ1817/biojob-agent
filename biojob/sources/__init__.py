@@ -11,6 +11,7 @@ from biojob.sources.feed import FeedJobAdapter
 from biojob.sources.http import SafeHttpClient, SafeHttpResponse
 from biojob.sources.manual import ManualJobAdapter
 from biojob.sources.public_page import PublicPageAdapter
+from biojob.sources.search_feed import SearchFeedAdapter
 
 __all__ = [
     "FeedJobAdapter",
@@ -19,6 +20,7 @@ __all__ = [
     "PublicPageAdapter",
     "SafeHttpClient",
     "SafeHttpResponse",
+    "SearchFeedAdapter",
     "SourceAdapterError",
     "SourceConfigurationError",
     "SourceFetchError",

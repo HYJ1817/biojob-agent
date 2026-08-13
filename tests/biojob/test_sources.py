@@ -9,6 +9,7 @@ from biojob.sources import (
     ManualJobAdapter,
     PublicPageAdapter,
     SafeHttpClient,
+    SearchFeedAdapter,
     SourceConfigurationError,
     SourceFetchError,
     SourceSecurityError,
@@ -453,3 +454,70 @@ def test_feed_requires_company_and_skips_invalid_entries():
         )
     finally:
         raw_client.close()
+
+
+def test_search_feed_extracts_relevant_undergraduate_job_and_filters_noise():
+    rss = """<?xml version="1.0"?>
+    <rss version="2.0"><channel>
+      <item>
+        <title>齐鲁制药 - 生物工艺工程师（2027校招）</title>
+        <link>https://jobs.example.test/graduate/123?utm_source=bing</link>
+        <description><![CDATA[<p>本科应届；负责发酵生产和GMP记录。</p>]]></description>
+        <pubDate>2026-08-13</pubDate>
+      </item>
+      <item>
+        <title>某研究院 - 生物学博士后</title>
+        <link>https://jobs.example.test/postdoc/1</link>
+      </item>
+      <item>
+        <title>某药企 - 医药销售高级经理</title>
+        <link>https://jobs.example.test/sales/1</link>
+      </item>
+    </channel></rss>"""
+    safe, raw_client = client_for(
+        lambda _request: httpx.Response(
+            200, text=rss, headers={"content-type": "application/rss+xml"}
+        )
+    )
+    try:
+        jobs = SearchFeedAdapter(safe).fetch({
+            "url": "https://search.example.test/rss",
+            "query_label": "生产与工艺",
+        })
+    finally:
+        raw_client.close()
+
+    assert jobs == [
+        RawJob(
+            company_name="齐鲁制药",
+            title="生物工艺工程师（2027校招）",
+            detail_url="https://jobs.example.test/graduate/123",
+            jd_text="本科应届；负责发酵生产和GMP记录。",
+            published_at="2026-08-13",
+            recruitment_type="校招（待核验）",
+        )
+    ]
+
+
+def test_search_feed_uses_honest_fallback_company_when_title_cannot_be_split():
+    rss = """<rss><channel><item>
+      <title>山东生物制药QA/QC应届岗位汇总</title>
+      <link>https://career.example.edu/article/88</link>
+      <description>本科，质量检验与GMP记录。</description>
+    </item></channel></rss>"""
+    safe, raw_client = client_for(
+        lambda _request: httpx.Response(
+            200, text=rss, headers={"content-type": "application/xml"}
+        )
+    )
+    try:
+        jobs = SearchFeedAdapter(safe).fetch({
+            "url": "https://search.example.test/rss",
+            "query_label": "山东质量岗位",
+        })
+    finally:
+        raw_client.close()
+
+    assert jobs[0].company_name == "待核验 · career.example.edu"
+    assert jobs[0].title == "山东生物制药QA/QC应届岗位汇总"
+    assert jobs[0].detail_url == "https://career.example.edu/article/88"
