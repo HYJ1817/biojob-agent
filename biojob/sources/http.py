@@ -17,6 +17,7 @@ from biojob.sources.base import SourceFetchError, SourceSecurityError
 _REDIRECT_STATUSES = {301, 302, 303, 307, 308}
 _USER_AGENT = "BioJob-Agent/0.1 (local desktop job discovery)"
 _CHARSET_PATTERN = re.compile(r"charset\s*=\s*['\"]?([^;'\"\s]+)", re.I)
+_TUN_SYNTHETIC_NETWORK = ipaddress.ip_network("198.18.0.0/15")
 
 
 @dataclass(frozen=True)
@@ -56,27 +57,17 @@ class SafeHttpClient:
         if timeout_seconds <= 0 or max_redirects < 0 or max_body_bytes <= 0:
             raise ValueError("HTTP safety bounds must be positive")
 
-    def validate_public_url(self, url: str) -> str:
-        if not isinstance(url, str) or not url.strip():
-            raise SourceSecurityError("source URL must be a non-empty string")
-        if any(ord(character) < 32 or ord(character) == 127 for character in url):
-            raise SourceSecurityError("source URL contains control characters")
-        url = url.strip()
-        try:
-            parsed = urlsplit(url)
-            hostname = parsed.hostname
-            parsed.port
-        except ValueError as exc:
-            raise SourceSecurityError("source URL is malformed") from exc
-        if (
-            parsed.scheme.lower() not in {"http", "https"}
-            or not hostname
-            or parsed.username is not None
-            or parsed.password is not None
-        ):
-            raise SourceSecurityError(
-                "source URL must be absolute public HTTP(S) without user info"
-            )
+    def validate_external_link(self, url: str) -> str:
+        """Validate a user-clicked HTTP(S) link without resolving or fetching it."""
+        validated, _hostname = _validate_http_url_syntax(url)
+        return validated
+
+    def validate_public_url(
+        self, url: str, *, reviewed_hosts: frozenset[str] = frozenset()
+    ) -> str:
+        url, hostname = _validate_http_url_syntax(url)
+        normalized_reviewed_hosts = _normalize_reviewed_hosts(reviewed_hosts)
+        hostname_is_reviewed = _normalize_hostname(hostname) in normalized_reviewed_hosts
         addresses = _literal_or_resolved_addresses(hostname, self.resolver)
         if not addresses:
             raise SourceSecurityError("source hostname did not resolve")
@@ -87,23 +78,32 @@ class SafeHttpClient:
                 raise SourceSecurityError(
                     "source resolver returned an invalid IP"
                 ) from exc
+            if parsed_address in _TUN_SYNTHETIC_NETWORK and hostname_is_reviewed:
+                continue
             if not parsed_address.is_global:
                 raise SourceSecurityError(
                     "source hostname must resolve only to public addresses"
                 )
         return url
 
-    def get(self, url: str) -> SafeHttpResponse:
+    def get(
+        self, url: str, *, reviewed_hosts: frozenset[str] = frozenset()
+    ) -> SafeHttpResponse:
+        normalized_reviewed_hosts = _normalize_reviewed_hosts(reviewed_hosts)
         if self.client is not None:
-            return self._get_with_client(self.client, url)
+            return self._get_with_client(self.client, url, normalized_reviewed_hosts)
         with httpx.Client(trust_env=False) as client:
-            return self._get_with_client(client, url)
+            return self._get_with_client(client, url, normalized_reviewed_hosts)
 
-    def _get_with_client(self, client: httpx.Client, url: str) -> SafeHttpResponse:
+    def _get_with_client(
+        self, client: httpx.Client, url: str, reviewed_hosts: frozenset[str]
+    ) -> SafeHttpResponse:
         current_url = url
         redirects = 0
         while True:
-            current_url = self.validate_public_url(current_url)
+            current_url = self.validate_public_url(
+                current_url, reviewed_hosts=reviewed_hosts
+            )
             try:
                 with client.stream(
                     "GET",
@@ -157,6 +157,45 @@ class SafeHttpClient:
                 raise
             except httpx.HTTPError as exc:
                 raise SourceFetchError(f"source request failed: {exc}") from exc
+
+
+def _validate_http_url_syntax(url: str) -> tuple[str, str]:
+        if not isinstance(url, str) or not url.strip():
+            raise SourceSecurityError("source URL must be a non-empty string")
+        if any(ord(character) < 32 or ord(character) == 127 for character in url):
+            raise SourceSecurityError("source URL contains control characters")
+        url = url.strip()
+        try:
+            parsed = urlsplit(url)
+            hostname = parsed.hostname
+            parsed.port
+        except ValueError as exc:
+            raise SourceSecurityError("source URL is malformed") from exc
+        if (
+            parsed.scheme.lower() not in {"http", "https"}
+            or not hostname
+            or parsed.username is not None
+            or parsed.password is not None
+        ):
+            raise SourceSecurityError(
+                "source URL must be absolute public HTTP(S) without user info"
+            )
+        return url, hostname
+
+
+def _normalize_hostname(hostname: str) -> str:
+    try:
+        return hostname.rstrip(".").encode("idna").decode("ascii").casefold()
+    except UnicodeError as exc:
+        raise SourceSecurityError("source hostname is malformed") from exc
+
+
+def _normalize_reviewed_hosts(hostnames: frozenset[str]) -> frozenset[str]:
+    if not isinstance(hostnames, frozenset) or not all(
+        isinstance(hostname, str) and hostname for hostname in hostnames
+    ):
+        raise SourceSecurityError("reviewed source hosts are invalid")
+    return frozenset(_normalize_hostname(hostname) for hostname in hostnames)
 
 
 def _resolve_hostname(hostname: str) -> list[str]:

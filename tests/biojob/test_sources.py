@@ -95,6 +95,88 @@ def test_safe_http_rejects_hostname_resolving_to_private_address():
         raw_client.close()
 
 
+def test_safe_http_tun_synthetic_dns_requires_exact_reviewed_host():
+    requests = []
+    safe, raw_client = client_for(
+        lambda request: requests.append(request) or httpx.Response(200, text="ok"),
+        resolver=lambda _hostname: ["198.18.0.58"],
+    )
+    try:
+        with pytest.raises(SourceSecurityError, match="public"):
+            safe.get("https://jobs.example.test/feed")
+
+        response = safe.get(
+            "https://jobs.example.test/feed",
+            reviewed_hosts=frozenset({"jobs.example.test"}),
+        )
+
+        with pytest.raises(SourceSecurityError, match="public"):
+            safe.get(
+                "https://evil.example.test/feed",
+                reviewed_hosts=frozenset({"jobs.example.test"}),
+            )
+    finally:
+        raw_client.close()
+
+    assert response.text == "ok"
+    assert [request.url.host for request in requests] == ["jobs.example.test"]
+
+
+def test_safe_http_reviewed_host_cannot_redirect_to_unreviewed_tun_host():
+    def handler(request):
+        return httpx.Response(
+            302, headers={"location": "https://evil.example.test/feed"}
+        )
+
+    safe, raw_client = client_for(
+        handler, resolver=lambda _hostname: ["198.18.0.58"]
+    )
+    try:
+        with pytest.raises(SourceSecurityError, match="public"):
+            safe.get(
+                "https://jobs.example.test/feed",
+                reviewed_hosts=frozenset({"jobs.example.test"}),
+            )
+    finally:
+        raw_client.close()
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "file:///etc/passwd",
+        "https://user:password@example.test/jobs",
+        "https://example.test:invalid/jobs",
+        "https:///missing-host",
+        "https://example.test/jobs\x7f",
+    ],
+)
+def test_external_link_validation_rejects_unsafe_syntax_without_dns(url):
+    safe, raw_client = client_for(lambda _request: httpx.Response(200))
+    try:
+        with pytest.raises(SourceSecurityError):
+            safe.validate_external_link(url)
+    finally:
+        raw_client.close()
+
+
+def test_external_link_validation_accepts_https_without_resolving_dns():
+    resolutions = []
+    safe, raw_client = client_for(
+        lambda _request: httpx.Response(200),
+        resolver=lambda hostname: resolutions.append(hostname) or ["198.18.0.58"],
+    )
+    try:
+        assert (
+            safe.validate_external_link("https://jobs.example.test/graduate/1")
+            == "https://jobs.example.test/graduate/1"
+        )
+    finally:
+        raw_client.close()
+
+    assert resolutions == []
+
+
 def test_safe_http_revalidates_redirect_and_blocks_dns_rebinding():
     resolutions = iter([[PUBLIC_IP], ["127.0.0.1"]])
 
