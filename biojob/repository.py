@@ -158,6 +158,14 @@ class BioJobRepository:
             (entity_id,),
         ).fetchall()
 
+    def source_has_user_update(self, source_id: str) -> bool:
+        row = self.connection.execute(
+            "SELECT 1 FROM audit_log WHERE entity_id = ? "
+            "AND entity_type = 'source' AND action = 'source.updated' LIMIT 1",
+            (source_id,),
+        ).fetchone()
+        return row is not None
+
     def upsert_company(
         self,
         *,
@@ -300,12 +308,13 @@ class BioJobRepository:
         values: dict[str, str | int | None],
         updated_at: str,
     ) -> int:
-        allowed = {"name", "enabled", "config_json", "description"}
+        allowed = {"name", "adapter_type", "enabled", "config_json", "description"}
         if not values or not set(values) <= allowed:
             raise ValueError("invalid source update fields")
         cursor = self.connection.execute(
             "UPDATE sources SET "
             "name = CASE WHEN ? THEN ? ELSE name END, "
+            "adapter_type = CASE WHEN ? THEN ? ELSE adapter_type END, "
             "enabled = CASE WHEN ? THEN ? ELSE enabled END, "
             "config_json = CASE WHEN ? THEN ? ELSE config_json END, "
             "description = CASE WHEN ? THEN ? ELSE description END, "
@@ -313,6 +322,8 @@ class BioJobRepository:
             (
                 int("name" in values),
                 values.get("name"),
+                int("adapter_type" in values),
+                values.get("adapter_type"),
                 int("enabled" in values),
                 values.get("enabled"),
                 int("config_json" in values),
@@ -642,6 +653,25 @@ class BioJobRepository:
             "GROUP BY ranked.decision"
         ).fetchall()
 
+    def active_candidate_count(self) -> int:
+        row = self.connection.execute(
+            "SELECT COUNT(*) FROM jobs WHERE deleted_at IS NULL"
+        ).fetchone()
+        if row is None:
+            raise RuntimeError("candidate count could not be read")
+        return int(row[0])
+
+    def pending_verification_count(self) -> int:
+        row = self.connection.execute(
+            "SELECT COUNT(DISTINCT jobs.id) FROM jobs "
+            "JOIN job_sources ON job_sources.job_id = jobs.id "
+            "JOIN sources ON sources.id = job_sources.source_id "
+            "WHERE jobs.deleted_at IS NULL AND sources.adapter_type = 'search_feed'"
+        ).fetchone()
+        if row is None:
+            raise RuntimeError("pending verification count could not be read")
+        return int(row[0])
+
     def source_counts(self) -> sqlite3.Row:
         row = self.connection.execute(
             "SELECT COUNT(*) AS total, "
@@ -949,7 +979,14 @@ SELECT
      WHERE job_sources.job_id = jobs.id) AS source_count,
     (SELECT COUNT(*) FROM job_snapshots
      JOIN job_sources ON job_sources.id = job_snapshots.job_source_id
-     WHERE job_sources.job_id = jobs.id) AS snapshot_count
+     WHERE job_sources.job_id = jobs.id) AS snapshot_count,
+    EXISTS(
+        SELECT 1 FROM job_sources AS verification_sources
+        JOIN sources AS verification_catalog
+          ON verification_catalog.id = verification_sources.source_id
+        WHERE verification_sources.job_id = jobs.id
+          AND verification_catalog.adapter_type = 'search_feed'
+    ) AS needs_verification
 FROM jobs
 JOIN companies ON companies.id = jobs.company_id
 JOIN latest_decision ON latest_decision.job_id = jobs.id

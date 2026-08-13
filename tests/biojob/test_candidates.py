@@ -30,14 +30,19 @@ def service(database):
     return BioJobService(database)
 
 
-def add_source(database, source_id="source-qilu", name="齐鲁制药官网"):
+def add_source(
+    database,
+    source_id="source-qilu",
+    name="齐鲁制药官网",
+    adapter_type="public_page",
+):
     with closing(database.connect()) as connection:
         now = "2026-08-12T00:00:00+00:00"
         connection.execute(
             "INSERT INTO sources "
             "(id, name, adapter_type, config_json, description, created_at, updated_at) "
-            "VALUES (?, ?, 'public_page', '{}', '', ?, ?)",
-            (source_id, name, now, now),
+            "VALUES (?, ?, ?, '{}', '', ?, ?)",
+            (source_id, name, adapter_type, now, now),
         )
     return source_id
 
@@ -101,6 +106,36 @@ def test_ingest_creates_reviewable_candidate_without_application(database, servi
     assert table_count(database, "job_snapshots") == 1
     assert table_count(database, "job_matches") == 1
     assert table_count(database, "candidate_decisions") == 1
+
+
+def test_search_feed_candidate_is_marked_for_original_page_verification(
+    database, service
+):
+    source_id = add_source(database, adapter_type="search_feed")
+
+    candidate = service.ingest_candidate(
+        raw_job(), source_id=source_id, actor="source:search"
+    )
+
+    assert candidate["needs_verification"] is True
+
+    official_id = add_source(
+        database,
+        source_id="source-official",
+        name="齐鲁制药官方招聘",
+        adapter_type="public_page",
+    )
+    candidate = service.ingest_candidate(
+        raw_job(
+            title="QC实验员",
+            detail_url="https://official.example.test/jobs/1",
+            external_id="official-qc-1",
+        ),
+        source_id=official_id,
+        actor="source:official",
+    )
+
+    assert candidate["needs_verification"] is False
 
 
 def test_same_snapshot_is_idempotent_and_changed_jd_adds_snapshot(database, service):

@@ -12,6 +12,7 @@ from biojob.database import BioJobDatabase
 from biojob.domain import DomainValidationError, RawJob
 from biojob.repository import BioJobRepository
 from biojob.sources.base import JobSourceAdapter
+from biojob.sources.catalog import reviewed_hosts_for_source
 
 if TYPE_CHECKING:
     from biojob.service import BioJobService
@@ -63,7 +64,11 @@ class DiscoveryRunner:
             connection.close()
 
         try:
-            items = adapter.fetch(source["config"])
+            runtime_config = dict(source["config"])
+            reviewed_hosts = reviewed_hosts_for_source(source["id"])
+            if reviewed_hosts:
+                runtime_config["_reviewed_hosts"] = sorted(reviewed_hosts)
+            items = adapter.fetch(runtime_config)
             if not isinstance(items, list):
                 raise DomainValidationError("source adapter must return a list")
         except Exception as exc:

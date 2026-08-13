@@ -135,10 +135,38 @@ class BioJobService:
             connection.execute("BEGIN IMMEDIATE")
             repository = BioJobRepository(connection)
             for default in DEFAULT_SOURCES:
-                if (
-                    repository.get_source_by_name(default.name) is not None
-                    or repository.get_source(default.source_id) is not None
-                ):
+                existing_by_id = repository.get_source(default.source_id)
+                existing_by_name = repository.get_source_by_name(default.name)
+                if existing_by_id is not None:
+                    if (
+                        default.adapter_type == "portal"
+                        and existing_by_id["adapter_type"] != "portal"
+                        and not repository.source_has_user_update(default.source_id)
+                    ):
+                        reconciled_at = _utc_now()
+                        repository.update_source(
+                            source_id=default.source_id,
+                            values={
+                                "adapter_type": "portal",
+                                "enabled": 0,
+                                "config_json": _serialize_json(
+                                    "config", default.config
+                                ),
+                                "description": default.description,
+                            },
+                            updated_at=reconciled_at,
+                        )
+                        self._insert_audit(
+                            repository,
+                            action="source.default_reconciled",
+                            entity_id=default.source_id,
+                            entity_type="source",
+                            actor="system",
+                            metadata={"adapter_type": "portal"},
+                            created_at=reconciled_at,
+                        )
+                    continue
+                if existing_by_name is not None:
                     continue
                 created_at = _utc_now()
                 repository.insert_source(
@@ -343,17 +371,39 @@ class BioJobService:
         finally:
             connection.close()
 
-    def run_enabled_sources(self, *, actor: str) -> list[dict[str, Any]]:
+    def run_enabled_sources(self, *, actor: str) -> dict[str, Any]:
         actor = _require_nonempty_string("actor", actor)
         connection = self.database.connect()
         try:
+            repository = BioJobRepository(connection)
             source_ids = [
                 row["id"]
-                for row in BioJobRepository(connection).list_sources(enabled_only=True)
+                for row in repository.list_sources(enabled_only=True)
             ]
+            before_count = repository.active_candidate_count()
         finally:
             connection.close()
-        return [self.run_source(source_id, actor=actor) for source_id in source_ids]
+        runs = [self.run_source(source_id, actor=actor) for source_id in source_ids]
+        connection = self.database.connect()
+        try:
+            repository = BioJobRepository(connection)
+            after_count = repository.active_candidate_count()
+            pending_verification = repository.pending_verification_count()
+        finally:
+            connection.close()
+        new_candidates = max(0, after_count - before_count)
+        completed = [run for run in runs if run["status"] == "completed"]
+        successful_results = sum(run["result_count"] for run in completed)
+        return {
+            "runs": runs,
+            "summary": {
+                "completed_sources": len(completed),
+                "failed_sources": sum(run["status"] == "failed" for run in runs),
+                "new_candidates": new_candidates,
+                "merged_results": max(0, successful_results - new_candidates),
+                "pending_verification": pending_verification,
+            },
+        }
 
     def list_source_runs(self, *, source_id: str | None = None) -> list[dict[str, Any]]:
         if source_id is not None:
@@ -2250,6 +2300,11 @@ def _candidate_dict(row: sqlite3.Row) -> dict[str, Any]:
         result["lifecycle_status"], job_id
     )
     decision = _parse_persisted_candidate_decision(result["candidate_decision"], job_id)
+    if result["needs_verification"] not in {0, 1}:
+        raise DomainDataCorruptionError(
+            f"corrupt candidate {job_id}: needs_verification is invalid"
+        )
+    result["needs_verification"] = bool(result["needs_verification"])
     evidence = _decode_json_field(
         result["match_evidence_json"],
         table="job_matches",

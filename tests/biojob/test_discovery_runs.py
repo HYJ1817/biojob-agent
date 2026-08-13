@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import closing
+import json
 
 import pytest
 
@@ -50,6 +51,18 @@ class InvalidReturnAdapter:
 
     def fetch(self, config):
         return None
+
+
+class CapturingAdapter:
+    adapter_type = "search_feed"
+
+    def __init__(self, items):
+        self.items = items
+        self.configs = []
+
+    def fetch(self, config):
+        self.configs.append(dict(config))
+        return self.items
 
 
 def raw_job(number=1):
@@ -118,6 +131,118 @@ def test_default_upsert_tolerates_user_renaming_stable_default(service):
         next(source for source in repeated if source["id"] == qilu["id"])["name"]
         == "我的齐鲁关注"
     )
+
+
+def test_untouched_legacy_default_becomes_portal_without_losing_run_history(
+    database, service
+):
+    now = "2026-08-12T00:00:00+00:00"
+    with closing(database.connect()) as connection:
+        connection.execute(
+            "INSERT INTO sources "
+            "(id, name, adapter_type, enabled, config_json, description, created_at, updated_at) "
+            "VALUES (?, ?, 'public_page', 1, ?, ?, ?, ?)",
+            (
+                "default-qilu",
+                "齐鲁制药招聘",
+                json.dumps({
+                    "url": "https://www.qilu-pharma.com/position.html",
+                    "company_name": "齐鲁制药",
+                }),
+                "旧版自动抓取",
+                now,
+                now,
+            ),
+        )
+        connection.execute(
+            "INSERT INTO source_runs "
+            "(id, source_id, status, cursor_json, result_count, started_at, finished_at) "
+            "VALUES ('legacy-run', 'default-qilu', 'completed', '{}', 0, ?, ?)",
+            (now, now),
+        )
+
+    sources = service.ensure_default_sources()
+    qilu = next(source for source in sources if source["id"] == "default-qilu")
+
+    assert qilu["adapter_type"] == "portal"
+    assert qilu["enabled"] is False
+    assert service.list_source_runs(source_id="default-qilu")[0]["id"] == "legacy-run"
+
+
+def test_user_modified_legacy_default_is_not_reconciled(database, service):
+    now = "2026-08-12T00:00:00+00:00"
+    with closing(database.connect()) as connection:
+        connection.execute(
+            "INSERT INTO sources "
+            "(id, name, adapter_type, enabled, config_json, description, created_at, updated_at) "
+            "VALUES ('default-qilu', '我的齐鲁关注', 'public_page', 1, ?, '', ?, ?)",
+            (json.dumps({"url": "https://jobs.example.test/qilu"}), now, now),
+        )
+        connection.execute(
+            "INSERT INTO audit_log "
+            "(id, action, entity_type, entity_id, actor, metadata_json, created_at) "
+            "VALUES ('audit-user', 'source.updated', 'source', 'default-qilu', "
+            "'user', '{}', ?)",
+            (now,),
+        )
+
+    sources = service.ensure_default_sources()
+    qilu = next(source for source in sources if source["id"] == "default-qilu")
+
+    assert qilu["name"] == "我的齐鲁关注"
+    assert qilu["adapter_type"] == "public_page"
+    assert qilu["enabled"] is True
+
+
+def test_reviewed_hosts_are_injected_for_run_but_never_persisted(database):
+    adapter = CapturingAdapter([])
+    service = BioJobService(database, source_adapters={"search_feed": adapter})
+    source = next(
+        item
+        for item in service.ensure_default_sources()
+        if item["id"] == "search-production-process"
+    )
+
+    assert service.run_source(source["id"], actor="user")["status"] == "completed"
+
+    assert adapter.configs[0]["_reviewed_hosts"] == ["www.bing.com"]
+    persisted = next(
+        item for item in service.list_sources() if item["id"] == source["id"]
+    )
+    assert "_reviewed_hosts" not in persisted["config"]
+
+
+def test_run_enabled_sources_returns_batch_summary_with_merged_results(database):
+    duplicate = raw_job()
+    adapter = CapturingAdapter([duplicate])
+    service = BioJobService(
+        database,
+        source_adapters={"search_feed": adapter, "failing": FailingAdapter()},
+    )
+    for number in (1, 2):
+        service.create_source(
+            name=f"搜索源 {number}",
+            adapter_type="search_feed",
+            config={
+                "url": f"https://search.example.test/{number}",
+                "query_label": "测试",
+            },
+            actor="user",
+        )
+    service.create_source(
+        name="失败来源", adapter_type="failing", config={}, actor="user"
+    )
+
+    result = service.run_enabled_sources(actor="user")
+
+    assert {run["status"] for run in result["runs"]} == {"completed", "failed"}
+    assert result["summary"] == {
+        "completed_sources": 2,
+        "failed_sources": 1,
+        "new_candidates": 1,
+        "merged_results": 1,
+        "pending_verification": 1,
+    }
 
 
 def test_create_update_and_list_source_are_audited(service):
@@ -294,9 +419,9 @@ def test_run_enabled_sources_continues_after_failure(database):
         name="正常来源", adapter_type="static", config={}, actor="user"
     )
 
-    runs = service.run_enabled_sources(actor="user")
+    result = service.run_enabled_sources(actor="user")
 
-    assert {run["status"] for run in runs} == {"failed", "completed"}
+    assert {run["status"] for run in result["runs"]} == {"failed", "completed"}
 
 
 @pytest.mark.parametrize("target", ["config", "run_cursor", "run_status"])
