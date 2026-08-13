@@ -36,8 +36,6 @@ import { stopBackendChild as stopBackendChildImpl, stopBackendTreesForUpdate } f
 import { dashboardFallbackArgs, sourceDeclaresServe } from './backend-command'
 import { createBackendConnectionState } from './backend-connection-state'
 import { buildDesktopBackendEnv, hermesManagedNodePathEntries } from './backend-env'
-import { resolveBioJobHome, resolveLegacyHermesHome } from './biojob-home'
-import { migrateLegacyBioJobData } from './biojob-migration'
 import { isReauthRequiredError, waitForHermesReady } from './backend-health'
 import {
   canImportHermesCli,
@@ -49,6 +47,8 @@ import {
 } from './backend-probes'
 import { waitForDashboardPortAnnouncement } from './backend-ready'
 import { shouldLatchBackendStartFailure, shouldLatchRemoteReauthFailure } from './backend-start-failure'
+import { resolveBioJobHome, resolveLegacyHermesHome } from './biojob-home'
+import { migrateLegacyBioJobData } from './biojob-migration'
 import { detectRemoteDisplay, isWindowsBinaryPathInWsl, isWslEnvironment } from './bootstrap-platform'
 import { decideBootstrapRepair } from './bootstrap-repair-guard'
 import { runBootstrap } from './bootstrap-runner'
@@ -547,6 +547,7 @@ const HERMES_HOME = resolveBioJobHome({
   userDataOverride: USER_DATA_OVERRIDE,
   homeDir: app.getPath('home')
 })
+
 let bioJobMigrationComplete = false
 
 function ensureLegacyBioJobDataMigrated() {
@@ -562,6 +563,7 @@ function ensureLegacyBioJobDataMigrated() {
 
   if (!legacyHome || path.resolve(legacyHome).toLowerCase() === path.resolve(HERMES_HOME).toLowerCase()) {
     bioJobMigrationComplete = true
+
     return
   }
 

@@ -27,9 +27,7 @@ BioJob Agent 是一个只在你自己的 Windows 电脑上运行的桌面求职�
 
 ## 3. 安装
 
-1. 从本仓库 Releases 下载 `BioJob-Agent-0.1.0-win-x64.exe`。
-   - 文件大小：`184,236,408` 字节；
-   - SHA-256：`7C94A89FE25DF6ED33E1C2045D90B97D95D77F57AAC1CAE74819FEB6A21A4474`。
+1. 从本仓库 Releases 下载 `BioJob-Agent-0.1.1-win-x64.exe`，并按发布页给出的 SHA-256 校验文件。
 2. 双击安装包，按提示完成安装。
 3. 启动 BioJob Agent。第一次启动会显示组件安装进度，通常需要几分钟；网络较慢时会更久，请不要直接关闭窗口。
 4. 安装完成后，左侧导航点击“BioJob”进入求职工作台。
@@ -98,10 +96,12 @@ JD、申请入口、企业招聘主页、匹配报告和简历文件均保留为
 默认数据保存在：
 
 ```text
-%LOCALAPPDATA%\hermes\biojob\
+%LOCALAPPDATA%\BioJob Agent\biojob\
 ```
 
 其中包含 SQLite 数据库、导入文档副本、生成的简历与 Excel 文件。卸载桌面程序时不要假设这些求职数据会自动删除；重装或升级前，建议先完整复制 `biojob` 文件夹作为备份。
+
+BioJob Agent 使用独立的运行环境和数据目录，不会复用或修改 `%LOCALAPPDATA%\hermes` 中已有的 Hermes 安装。若旧版 BioJob 曾在 `%LOCALAPPDATA%\hermes\biojob` 保存数据，新版首次启动会把该文件夹复制到上述新位置并保留原文件作为备份；Hermes 的 `config.yaml`、`.env`、认证信息、聊天记录和运行时不会被迁移。
 
 请不要公开上传含有姓名、电话、邮箱、教育经历或 API Key 的文件。导出的简历和投递表属于个人敏感资料。
 

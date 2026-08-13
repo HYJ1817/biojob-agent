@@ -2,7 +2,7 @@
   "name": "hermes",
   "productName": "BioJob Agent",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Evidence-backed graduate job search agent for biotechnology roles.",
   "author": "Nous Research",
   "type": "module",
