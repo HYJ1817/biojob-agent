@@ -79,13 +79,19 @@ def raw_job(number=1):
 def test_default_catalog_covers_target_directions_regions_and_portals(service):
     sources = service.ensure_default_sources()
 
-    discovery = [source for source in sources if source["adapter_type"] == "search_feed"]
+    discovery = [
+        source for source in sources if source["adapter_type"] == "search_feed"
+    ]
     portals = [source for source in sources if source["adapter_type"] == "portal"]
-    labels = " ".join(str(source["config"].get("query_label", "")) for source in discovery)
+    labels = " ".join(
+        str(source["config"].get("query_label", "")) for source in discovery
+    )
 
     assert len(discovery) >= 8
     assert all(source["enabled"] for source in discovery)
-    assert all(term in labels for term in ("生产工艺", "QA QC", "细胞实验", "发酵微生物"))
+    assert all(
+        term in labels for term in ("生产工艺", "QA QC", "细胞实验", "发酵微生物")
+    )
     assert "山东" in labels
     assert "大城市" in labels
     assert "高校就业网" in labels
@@ -95,7 +101,11 @@ def test_default_catalog_covers_target_directions_regions_and_portals(service):
     assert all(source["config"]["url"].startswith("https://") for source in sources)
     assert all("database" not in source for source in sources)
     assert len(sources) == len(DEFAULT_SOURCES)
-    assert all(reviewed_hosts_for_source(source["id"]) for source in discovery)
+    assert all(
+        reviewed_hosts_for_source(source["id"]) == {"www.so.com"}
+        for source in discovery
+    )
+    assert all("2027" not in source["config"]["url"] for source in discovery)
 
 
 def test_default_upsert_is_idempotent_and_preserves_user_changes(service):
@@ -117,6 +127,26 @@ def test_default_upsert_is_idempotent_and_preserves_user_changes(service):
     assert len(repeated) == len(DEFAULT_SOURCES)
     assert updated["enabled"] is False
     assert updated["config"]["url"] == "https://jobs.example.test/qilu"
+
+
+def test_default_upsert_refreshes_untouched_discovery_configuration(service):
+    original = service.ensure_default_sources()
+    source = next(
+        item for item in original if item["id"] == "search-production-process"
+    )
+    with closing(service.database.connect()) as connection:
+        connection.execute(
+            "UPDATE sources SET config_json = ? WHERE id = ?",
+            (
+                '{"url":"https://www.bing.com/old","query_label":"生产工艺"}',
+                source["id"],
+            ),
+        )
+
+    refreshed = service.ensure_default_sources()
+    updated = next(item for item in refreshed if item["id"] == source["id"])
+
+    assert updated["config"]["url"].startswith("https://www.so.com/s?")
 
 
 def test_default_upsert_tolerates_user_renaming_stable_default(service):
@@ -205,7 +235,7 @@ def test_reviewed_hosts_are_injected_for_run_but_never_persisted(database):
 
     assert service.run_source(source["id"], actor="user")["status"] == "completed"
 
-    assert adapter.configs[0]["_reviewed_hosts"] == ["www.bing.com"]
+    assert adapter.configs[0]["_reviewed_hosts"] == ["www.so.com"]
     persisted = next(
         item for item in service.list_sources() if item["id"] == source["id"]
     )

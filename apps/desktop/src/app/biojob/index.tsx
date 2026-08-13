@@ -24,8 +24,8 @@ import {
   listProfileFacts,
   listSources,
   patchJob,
-  runJobMatch,
   runEnabledSources,
+  runJobMatch,
   runSource,
   setProfileFactStatus,
   updateSource
@@ -33,8 +33,8 @@ import {
 import { useBioJobCopy } from './copy'
 import type {
   ApplicationStatus,
-  BioJobCandidate,
   BioJobBatchRun,
+  BioJobCandidate,
   BioJobDashboard,
   BioJobMatchReport,
   BioJobRecord,
@@ -786,6 +786,7 @@ function SourcesView({ busy, perform, sources }: { busy: string | null; perform:
           <SourceGroup title={c.officialPortals}>
             {portals.map(source => {
               const portalUrl = typeof source.config.url === 'string' ? source.config.url : null
+
               return (
                 <div className="flex flex-wrap items-center gap-4 py-4" key={source.id}>
                   <Codicon className="text-(--theme-primary)" name="link-external" size="0.9rem" />

@@ -1,6 +1,7 @@
 import type {
   ApplicationExport,
   ApplicationStatus,
+  BioJobBatchRun,
   BioJobCandidate,
   BioJobDashboard,
   BioJobMatchReport,
@@ -123,7 +124,7 @@ export const updateSource = (sourceId: string, body: { enabled?: boolean }) =>
 export const runSource = (sourceId: string) =>
   call<BioJobSourceRun>({ body: {}, method: 'POST', path: `/api/biojob/sources/${encodeURIComponent(sourceId)}/run` })
 export const runEnabledSources = () =>
-  call<import('./types').BioJobBatchRun>({ body: {}, method: 'POST', path: '/api/biojob/sources/run-enabled' })
+  call<BioJobBatchRun>({ body: {}, method: 'POST', path: '/api/biojob/sources/run-enabled' })
 
 export function listSourceRuns(sourceId?: string) {
   // URLSearchParams stringification is intentional: spaces use '+', matching the bridge tests and browser semantics.

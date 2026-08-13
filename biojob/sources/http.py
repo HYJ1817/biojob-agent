@@ -67,7 +67,9 @@ class SafeHttpClient:
     ) -> str:
         url, hostname = _validate_http_url_syntax(url)
         normalized_reviewed_hosts = _normalize_reviewed_hosts(reviewed_hosts)
-        hostname_is_reviewed = _normalize_hostname(hostname) in normalized_reviewed_hosts
+        hostname_is_reviewed = (
+            _normalize_hostname(hostname) in normalized_reviewed_hosts
+        )
         addresses = _literal_or_resolved_addresses(hostname, self.resolver)
         if not addresses:
             raise SourceSecurityError("source hostname did not resolve")
@@ -160,27 +162,27 @@ class SafeHttpClient:
 
 
 def _validate_http_url_syntax(url: str) -> tuple[str, str]:
-        if not isinstance(url, str) or not url.strip():
-            raise SourceSecurityError("source URL must be a non-empty string")
-        if any(ord(character) < 32 or ord(character) == 127 for character in url):
-            raise SourceSecurityError("source URL contains control characters")
-        url = url.strip()
-        try:
-            parsed = urlsplit(url)
-            hostname = parsed.hostname
-            parsed.port
-        except ValueError as exc:
-            raise SourceSecurityError("source URL is malformed") from exc
-        if (
-            parsed.scheme.lower() not in {"http", "https"}
-            or not hostname
-            or parsed.username is not None
-            or parsed.password is not None
-        ):
-            raise SourceSecurityError(
-                "source URL must be absolute public HTTP(S) without user info"
-            )
-        return url, hostname
+    if not isinstance(url, str) or not url.strip():
+        raise SourceSecurityError("source URL must be a non-empty string")
+    if any(ord(character) < 32 or ord(character) == 127 for character in url):
+        raise SourceSecurityError("source URL contains control characters")
+    url = url.strip()
+    try:
+        parsed = urlsplit(url)
+        hostname = parsed.hostname
+        parsed.port
+    except ValueError as exc:
+        raise SourceSecurityError("source URL is malformed") from exc
+    if (
+        parsed.scheme.lower() not in {"http", "https"}
+        or not hostname
+        or parsed.username is not None
+        or parsed.password is not None
+    ):
+        raise SourceSecurityError(
+            "source URL must be absolute public HTTP(S) without user info"
+        )
+    return url, hostname
 
 
 def _normalize_hostname(hostname: str) -> str:

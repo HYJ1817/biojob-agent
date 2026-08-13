@@ -17,8 +17,8 @@ import {
   listSourceRuns,
   listSources,
   patchJob,
-  runJobMatch,
   runEnabledSources,
+  runJobMatch,
   runSource,
   setProfileFactStatus,
   updateSource

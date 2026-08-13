@@ -139,6 +139,33 @@ class BioJobService:
                 existing_by_name = repository.get_source_by_name(default.name)
                 if existing_by_id is not None:
                     if (
+                        default.adapter_type == "search_feed"
+                        and existing_by_id["adapter_type"] == "search_feed"
+                        and not repository.source_has_user_update(default.source_id)
+                        and _source_dict(existing_by_id)["config"] != default.config
+                    ):
+                        reconciled_at = _utc_now()
+                        repository.update_source(
+                            source_id=default.source_id,
+                            values={
+                                "enabled": int(default.enabled),
+                                "config_json": _serialize_json(
+                                    "config", default.config
+                                ),
+                                "description": default.description,
+                            },
+                            updated_at=reconciled_at,
+                        )
+                        self._insert_audit(
+                            repository,
+                            action="source.default_reconciled",
+                            entity_id=default.source_id,
+                            entity_type="source",
+                            actor="system",
+                            metadata={"adapter_type": "search_feed"},
+                            created_at=reconciled_at,
+                        )
+                    if (
                         default.adapter_type == "portal"
                         and existing_by_id["adapter_type"] != "portal"
                         and not repository.source_has_user_update(default.source_id)
@@ -377,8 +404,7 @@ class BioJobService:
         try:
             repository = BioJobRepository(connection)
             source_ids = [
-                row["id"]
-                for row in repository.list_sources(enabled_only=True)
+                row["id"] for row in repository.list_sources(enabled_only=True)
             ]
             before_count = repository.active_candidate_count()
         finally:

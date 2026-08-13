@@ -35,8 +35,8 @@ class DefaultSource:
         return result
 
 
-def _bing_feed(query: str) -> str:
-    return f"https://www.bing.com/search?{urlencode({'format': 'rss', 'q': query})}"
+def _search_page(query: str) -> str:
+    return f"https://www.so.com/s?{urlencode({'q': query})}"
 
 
 def _search(source_id: str, name: str, label: str, query: str) -> DefaultSource:
@@ -44,17 +44,15 @@ def _search(source_id: str, name: str, label: str, query: str) -> DefaultSource:
         source_id=source_id,
         name=name,
         adapter_type="search_feed",
-        url=_bing_feed(query),
+        url=_search_page(query),
         enabled=True,
         description=f"公开搜索订阅：{label}；结果进入候选池后需打开原页面核验。",
         query_label=label,
-        reviewed_hosts=("www.bing.com",),
+        reviewed_hosts=("www.so.com",),
     )
 
 
-def _portal(
-    source_id: str, name: str, company_name: str, url: str
-) -> DefaultSource:
+def _portal(source_id: str, name: str, company_name: str, url: str) -> DefaultSource:
     hostname = urlsplit(url).hostname
     return DefaultSource(
         source_id=source_id,
@@ -73,61 +71,61 @@ DEFAULT_SOURCES = (
         "search-production-process",
         "生产与工艺岗位发现",
         "生产工艺",
-        "2027 校园招聘 本科 生物制药 生产技术 工艺工程 生物工艺",
+        "生物制药 工艺 招聘",
     ),
     _search(
         "search-quality",
         "质量岗位发现",
         "QA QC",
-        "2027 校园招聘 本科 生物制药 QA QC GMP 质量管理",
+        "QA QC 制药 招聘",
     ),
     _search(
         "search-cell-lab",
         "细胞与实验岗位发现",
         "细胞实验",
-        "2027 校园招聘 本科 细胞培养 实验员 生物分析 研发助理",
+        "细胞培养 实验员 招聘",
     ),
     _search(
         "search-fermentation-microbiology",
         "发酵与微生物岗位发现",
         "发酵微生物",
-        "2027 校园招聘 本科 发酵工程 微生物培养 菌株筛选",
+        "发酵工程 微生物 招聘",
     ),
     _search(
         "search-shandong",
         "山东生物医药岗位发现",
         "山东",
-        "2027 校园招聘 本科 生物制药 山东 济南 青岛 烟台 济宁 QA QC 工艺",
+        "山东 生物制药 招聘",
     ),
     _search(
         "search-major-cities",
         "周边与大城市岗位发现",
         "大城市",
-        "2027 校园招聘 本科 生物医药 北京 天津 上海 江苏 浙江 工艺 QA QC",
+        "生物医药 应届生 北京 上海 江苏 浙江 招聘",
     ),
     _search(
         "search-university-careers",
         "高校就业网岗位发现",
         "高校就业网",
-        "site:edu.cn 2027 校园招聘 生物制药 本科 工艺 QA QC 实验员",
+        "site:edu.cn 生物制药 校园招聘",
     ),
     _search(
         "search-target-companies",
         "重点药企岗位发现",
         "重点企业",
-        "2027 校园招聘 齐鲁制药 荣昌生物 绿叶制药 华熙生物 恒瑞 鲁南",
+        "齐鲁制药 荣昌生物 绿叶制药 华熙生物 招聘",
     ),
     _search(
         "search-cro-cdmo",
         "CRO/CDMO岗位发现",
         "CRO CDMO",
-        "2027 校园招聘 本科 康龙化成 药明康德 凯莱英 生物 工艺 实验",
+        "康龙化成 药明康德 凯莱英 生物 招聘",
     ),
     _search(
         "search-internship",
         "相关实习岗位发现",
         "短期实习",
-        "2027 生物工程 本科 实习 细胞培养 QA QC 发酵 山东",
+        "生物工程 生物制药 实习 招聘",
     ),
     _portal(
         "default-qilu",

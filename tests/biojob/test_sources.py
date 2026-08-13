@@ -129,9 +129,7 @@ def test_safe_http_reviewed_host_cannot_redirect_to_unreviewed_tun_host():
             302, headers={"location": "https://evil.example.test/feed"}
         )
 
-    safe, raw_client = client_for(
-        handler, resolver=lambda _hostname: ["198.18.0.58"]
-    )
+    safe, raw_client = client_for(handler, resolver=lambda _hostname: ["198.18.0.58"])
     try:
         with pytest.raises(SourceSecurityError, match="public"):
             safe.get(
@@ -407,6 +405,63 @@ def test_feed_adapter_parses_rss_and_atom_entries():
     assert rss_jobs[0].published_at == "2026-08-12"
     assert atom_jobs[0].title == "QA专员"
     assert atom_jobs[0].published_at == "2026-08-12T08:00:00Z"
+
+
+def test_search_adapter_parses_relevant_html_results_and_skips_noise():
+    html = """
+    <main>
+      <h3 class="res-title"><a href="https://www.so.com/link?m=job1">
+        生物制药工艺员招聘_某生物公司招聘 - 智联招聘
+      </a></h3>
+      <h3 class="res-title"><a href="https://wenku.so.com/noise">
+        生物制药工艺流程与控制面试资料 - 360文库
+      </a></h3>
+      <h3 class="res-title"><a href="javascript:alert(1)">
+        细胞培养技术员招聘
+      </a></h3>
+      <h3 class="res-title"><a href="https://www.so.com/link?m=old">
+        某生物制药公司2024年校园招聘
+      </a></h3>
+      <h3 class="res-title"><a href="https://www.so.com/link?m=research">
+        合成研究员招聘_某药企招聘 - 智联招聘
+      </a></h3>
+    </main>
+    """
+    safe, raw_client = client_for(
+        lambda _request: httpx.Response(
+            200, text=html, headers={"content-type": "text/html; charset=utf-8"}
+        )
+    )
+    try:
+        jobs = SearchFeedAdapter(safe).fetch({
+            "url": "https://www.so.com/s?q=biojob",
+            "query_label": "生产工艺",
+            "_reviewed_hosts": ["www.so.com"],
+        })
+    finally:
+        raw_client.close()
+
+    assert len(jobs) == 1
+    assert jobs[0].title == "生物制药工艺员招聘_某生物公司招聘 - 智联招聘"
+    assert jobs[0].detail_url == "https://www.so.com/link?m=job1"
+    assert jobs[0].recruitment_type == "校招（待核验）"
+
+
+def test_search_adapter_rejects_unexpected_html_provider():
+    safe, raw_client = client_for(
+        lambda _request: httpx.Response(
+            200, text="<html></html>", headers={"content-type": "text/html"}
+        )
+    )
+    try:
+        with pytest.raises(SourceFetchError, match="reviewed HTML search provider"):
+            SearchFeedAdapter(safe).fetch({
+                "url": "https://jobs.example.test/search",
+                "query_label": "生产工艺",
+                "_reviewed_hosts": ["jobs.example.test"],
+            })
+    finally:
+        raw_client.close()
 
 
 @pytest.mark.parametrize(
